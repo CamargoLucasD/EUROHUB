@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>EuroHub · Euroflex Divisórias</title>
 <meta name="description" content="Do orçamento à instalação, cada obra em um só lugar. Demonstração com dados ilustrativos.">
+<meta name="theme-color" content="#13214e">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2313214e'/%3E%3Cpath d='M9 8h13v3.2h-9v3.4h8v3.2h-8v3.4h9V24H9z' fill='%2353d4f0'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
@@ -27,69 +29,74 @@
     <div class="login-foot">Acesso restrito à equipe Euroflex</div>
   </div>
   <div class="login-right">
-    <form class="login-card" id="login-form" autocomplete="off">
+    <form class="login-card" id="login-form" novalidate>
       <h2>Entrar</h2>
       <p class="login-help">Use o e-mail e a senha cadastrados pelo gestor.</p>
       <label for="login-email">E-mail</label>
-      <input id="login-email" type="email" placeholder="nome@empresa.com.br" required>
+      <input id="login-email" type="email" placeholder="nome@empresa.com.br" autocomplete="username">
+      <div class="field-error" id="err-email" hidden>Informe um e-mail válido.</div>
       <label for="login-senha">Senha</label>
-      <input id="login-senha" type="password" placeholder="" required>
+      <input id="login-senha" type="password" autocomplete="current-password">
+      <div class="field-error" id="err-senha" hidden>Informe a senha.</div>
       <div class="login-row">
         <label class="check"><input type="checkbox" id="login-keep"> Manter conectado</label>
         <a href="#" id="login-forgot">Esqueci a senha</a>
       </div>
-      <button type="submit" class="btn btn-primary btn-block">Entrar</button>
+      <button type="submit" class="btn btn-primary btn-block" id="login-btn">Entrar</button>
       <p class="login-client">Cliente? <a href="#" id="login-portal">Acesse o portal do cliente</a></p>
+      <div class="login-demo">Ambiente de demonstração: use qualquer e-mail e senha para entrar. Todos os dados são ilustrativos.</div>
     </form>
   </div>
 </div>
 
-<!-- ===================== APP SHELL ===================== -->
+<!-- ===================== APP ===================== -->
 <div id="app" class="app" hidden>
-  <aside class="sidebar">
+  <aside class="sidebar" id="sidebar">
     <div class="brand">
       <div class="brand-logo">EURO<span>HUB</span></div>
       <div class="brand-sub">Euroflex Divisórias</div>
     </div>
-    <nav class="nav" id="nav">
-      <a href="#/painel" data-route="painel"><i class="dot"></i>Painel</a>
-      <a href="#/orcamentos" data-route="orcamentos"><i class="dot"></i>Orçamentos</a>
-      <a href="#/pedidos" data-route="pedidos"><i class="dot"></i>Pedidos</a>
-      <a href="#/projetos" data-route="projetos"><i class="dot"></i>Projetos</a>
-      <a href="#/verificacao" data-route="verificacao"><i class="dot"></i>Verificação</a>
-      <a href="#/producao" data-route="producao"><i class="dot"></i>Produção</a>
-      <a href="#/instalacao" data-route="instalacao"><i class="dot"></i>Instalação</a>
-      <a href="#/clientes" data-route="clientes"><i class="dot"></i>Clientes e obras</a>
-    </nav>
+    <nav class="nav" id="nav" aria-label="Menu principal"></nav>
+    <div class="demo-chip">Demonstração · dados ilustrativos</div>
+    <div class="side-user">
+      <span class="avatar" id="side-avatar">GE</span>
+      <div><b id="side-name">Gestor</b><small>Gestão comercial</small></div>
+    </div>
   </aside>
 
   <main class="main">
     <header class="topbar">
+      <button class="icon-btn menu-btn" id="menu-btn" aria-label="Abrir menu"></button>
       <div class="topbar-title">
-        <h1 id="page-title">Painel do gestor</h1>
-        <p id="page-sub">Novembro · dados ilustrativos</p>
+        <div class="crumbs" id="crumbs" hidden></div>
+        <h1 id="page-title"></h1>
+        <p id="page-sub"></p>
       </div>
       <div class="topbar-actions" id="topbar-actions"></div>
-      <div class="avatar-wrap">
-        <button class="avatar" id="avatar-btn" title="Conta">GE</button>
-        <div class="avatar-menu" id="avatar-menu" hidden>
-          <div class="avatar-menu-head">Gestor Euroflex<br><small id="avatar-email">gestor@euroflex.com.br</small></div>
-          <button id="btn-sair">Sair</button>
+      <div class="topbar-tools">
+        <div class="pop-wrap">
+          <button class="icon-btn" id="notif-btn" aria-label="Notificações"></button>
+          <div class="popover notif" id="notif-pop" hidden></div>
+        </div>
+        <div class="pop-wrap">
+          <button class="avatar" id="avatar-btn" aria-label="Conta">GE</button>
+          <div class="popover" id="avatar-pop" hidden>
+            <div class="pop-head"><div><span id="pop-name">Gestor</span><small id="pop-email"></small></div></div>
+            <button class="pop-item" id="btn-reset"></button>
+            <button class="pop-item danger" id="btn-sair"></button>
+          </div>
         </div>
       </div>
     </header>
-
-    <div class="content" id="content"><!-- views renderizadas pelo app.js --></div>
+    <div class="content" id="content"></div>
   </main>
 </div>
 
-<!-- ===================== MODAIS / TOAST ===================== -->
+<div id="drawer-root"></div>
 <div class="modal-back" id="modal-back" hidden>
   <div class="modal" id="modal" role="dialog" aria-modal="true"></div>
 </div>
-<div class="toast" id="toast" hidden></div>
-
-<!-- Área de impressão da proposta (Gerar PDF) -->
+<div class="toasts" id="toasts" aria-live="polite"></div>
 <div id="print-area" class="print-area" aria-hidden="true"></div>
 
 <script src="js/app.js"></script>
