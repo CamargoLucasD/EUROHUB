@@ -48,6 +48,13 @@ const fmt = (n, d) => Number(n || 0).toLocaleString('pt-BR', { minimumFractionDi
 const brl = n => 'R$ ' + fmt(Math.round(n));
 const brlK = n => n >= 1000 ? 'R$ ' + fmt(Math.round(n / 1000)) + ' mil' : brl(n);
 const num = v => { const x = parseFloat(String(v).replace(',', '.')); return isFinite(x) ? x : 0; };
+/* Lê uma medida em milímetros. Aceita "24500", "24.500" e, por tolerância, metros ("24,5" vira 24500). */
+function mmVal(v){
+  const s = String(v == null ? '' : v).trim().replace(/\s/g, ''); if (!s) return 0;
+  const x = /^\d{1,3}(\.\d{3})+(,\d+)?$/.test(s) ? parseFloat(s.replace(/\./g, '').replace(',', '.')) : parseFloat(s.replace(',', '.'));
+  if (!isFinite(x)) return 0;
+  return x > 0 && x < 100 ? x * 1000 : x;
+}
 const pad = n => String(n).padStart(2, '0');
 function agora(){ const d = new Date(); return `${pad(d.getDate())}/${pad(d.getMonth()+1)}, ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
 function hoje(){ const d = new Date(); return `${pad(d.getDate())}/${pad(d.getMonth()+1)}`; }
@@ -72,7 +79,7 @@ const PRECO_PORTA = 1800;
 const LIMITE_DESCONTO = 10;
 
 function calcula(o){
-  const m = num(o.metragem), pd = num(o.pedireito);
+  const mmL = mmVal(o.metragem), mmH = mmVal(o.pedireito), m = mmL / 1000, pd = mmH / 1000;
   const pts = Math.max(0, Math.round(num(o.portas)));
   const dsc = Math.min(Math.max(num(o.desconto), 0), 40);
   const area = m * pd;
@@ -83,7 +90,7 @@ function calcula(o){
   else if (o.comp === 'Somente painel cego') paineis = modulos;
   else { paineis = Math.ceil(modulos * 0.5625); vidros = Math.max(modulos - paineis, 0); }
   const bruto = area * (LINHAS[o.linha] || 600) * (COMPOS[o.comp] || 1) + pts * PRECO_PORTA;
-  return { m, pd, pts, dsc, area, perfis, paineis, vidros, bruto, total: bruto * (1 - dsc / 100) };
+  return { m, pd, mmL, mmH, pts, dsc, area, perfis, paineis, vidros, bruto, total: bruto * (1 - dsc / 100) };
 }
 
 /* ============================================================
@@ -139,19 +146,19 @@ function seed(){
         hist:[ h('Termo de entrega assinado','Cliente I','11/11, 18:05') ] },
     ],
     orcamentos: [
-      orcSeed('ORC-2291','Cliente J','Escritório central','Europrata 90 mm','Misto: vidro + painel cego','14','2,7','2','0','enviado','15/11','Vendedor A'),
-      orcSeed('ORC-2290','Cliente K','Clínica odontológica','Divisórias sanitárias','Somente painel cego','18','2,1','6','5','aprovado','14/11','Vendedor B'),
-      orcSeed('ORC-2288','Cliente L','Estúdio de gravação','Cabines acústicas','Somente painel cego','22','2,6','4','12','negociacao','13/11','Vendedor C'),
-      orcSeed('ORC-2285','Cliente M','Loja térrea','Europrata 60 mm','Somente vidro temperado','9,5','2,8','1','0','recusado','11/11','Vendedor A'),
-      orcSeed('ORC-2284','[Cliente]','Sede administrativa','Europrata 90 mm','Misto: vidro + painel cego','24,5','2,80','3','0','rascunho','12/11','Vendedor A'),
-      orcSeed('ORC-2281','Cliente N','Sala de reuniões','Divisória articulável','Misto: vidro + painel cego','11','2,7','1','3','aprovado','09/11','Vendedor B'),
-      orcSeed('ORC-2279','Cliente A','Sede administrativa','Europrata 90 mm','Misto: vidro + painel cego','15','2,8','2','0','aprovado','07/11','Vendedor A'),
+      orcSeed('ORC-2291','Cliente J','Escritório central','Europrata 90 mm','Misto: vidro + painel cego','14000','2700','2','0','enviado','15/11','Vendedor A'),
+      orcSeed('ORC-2290','Cliente K','Clínica odontológica','Divisórias sanitárias','Somente painel cego','18000','2100','6','5','aprovado','14/11','Vendedor B'),
+      orcSeed('ORC-2288','Cliente L','Estúdio de gravação','Cabines acústicas','Somente painel cego','22000','2600','4','12','negociacao','13/11','Vendedor C'),
+      orcSeed('ORC-2285','Cliente M','Loja térrea','Europrata 60 mm','Somente vidro temperado','9500','2800','1','0','recusado','11/11','Vendedor A'),
+      orcSeed('ORC-2284','[Cliente]','Sede administrativa','Europrata 90 mm','Misto: vidro + painel cego','24500','2800','3','0','rascunho','12/11','Vendedor A'),
+      orcSeed('ORC-2281','Cliente N','Sala de reuniões','Divisória articulável','Misto: vidro + painel cego','11000','2700','1','3','aprovado','09/11','Vendedor B'),
+      orcSeed('ORC-2279','Cliente A','Sede administrativa','Europrata 90 mm','Misto: vidro + painel cego','15000','2800','2','0','aprovado','07/11','Vendedor A'),
     ],
     projetos: seedProjetos(),
     checklist: [
       { t:'Vãos de porta e sentido de abertura',         ok:true  },
       { t:'Pé-direito e altura dos painéis',             ok:true  },
-      { t:'Parede B: 4,20 m no projeto × 4,12 m medido', ok:false, diverg:true },
+      { t:'Parede B: 4200 mm no projeto × 4120 mm medido', ok:false, diverg:true },
       { t:'Quantitativo igual ao orçamento',             ok:true  },
       { t:'Compatível com a linha escolhida',            ok:true  },
     ],
@@ -160,7 +167,7 @@ function seed(){
   };
 }
 
-const KEY = 'eurohub-v3';
+const KEY = 'eurohub-v4';
 let DB;
 function loadDB(){
   try { DB = JSON.parse(localStorage.getItem(KEY)); } catch (e) { DB = null; }
@@ -415,7 +422,7 @@ function viewPainel(){
 
   const atencao = [];
   DB.pedidos.filter(p => p.alerta).forEach(p => atencao.push({ icon:'alert', cor:'amber', t:`Pedido #${p.id} · ${p.cliente}`, s:`${p.desc} · ${p.nota.toLowerCase()}`, go:'pedido:' + p.id }));
-  if (DB.verif.status === 'andamento') atencao.push({ icon:'verificacao', cor:'cyan', t:'Projeto R01 aguarda verificação', s:'Pedido #1044 · divergência de 8 cm na parede B', go:'#/verificacao' });
+  if (DB.verif.status === 'andamento') atencao.push({ icon:'verificacao', cor:'cyan', t:'Projeto R01 aguarda verificação', s:'Pedido #1044 · divergência de 80 mm na parede B', go:'#/verificacao' });
   DB.orcamentos.filter(o => o.status === 'negociacao' && num(o.desconto) > LIMITE_DESCONTO).forEach(o =>
     atencao.push({ icon:'orcamentos', cor:'red', t:`${o.id} pede aprovação de desconto`, s:`${o.cliente} · ${fmt(num(o.desconto))}% acima do limite de ${LIMITE_DESCONTO}%`, go:'#/orcamentos/' + o.id }));
   DB.orcamentos.filter(o => o.status === 'rascunho').forEach(o =>
@@ -576,7 +583,7 @@ function viewOrcEditor(param){
   if (!novo && !orc){ location.hash = '#/orcamentos'; return; }
   const dados = orc ? clone(orc) : {
     id:null, cliente:'', obra:'', linha:'Europrata 90 mm', comp:'Misto: vidro + painel cego',
-    metragem:'', pedireito:'2,80', portas:'0', desconto:'0', obs:'', status:'rascunho', vendedor:'Vendedor A' };
+    metragem:'', pedireito:'2800', portas:'0', desconto:'0', obs:'', status:'rascunho', vendedor:'Vendedor A' };
 
   const st = ORC_STATUS[dados.status];
   setHeader(novo ? 'Novo orçamento' : `Orçamento ${dados.id}`,
@@ -597,8 +604,8 @@ function viewOrcEditor(param){
           <div><label for="o-obra">Obra</label><input id="o-obra" value="${esc(dados.obra)}" placeholder="Ex.: Sede administrativa"></div>
           <div><label for="o-linha">Linha</label><select id="o-linha">${linhaOpts}</select></div>
           <div><label for="o-comp">Composição</label><select id="o-comp">${compOpts}</select></div>
-          <div><label for="o-metragem">Metragem linear</label><div class="input-suffix"><input id="o-metragem" value="${esc(dados.metragem)}" inputmode="decimal" placeholder="0,0"><em>m</em></div></div>
-          <div><label for="o-pedireito">Pé-direito</label><div class="input-suffix"><input id="o-pedireito" value="${esc(dados.pedireito)}" inputmode="decimal"><em>m</em></div></div>
+          <div><label for="o-metragem">Comprimento linear</label><div class="input-suffix"><input id="o-metragem" value="${esc(dados.metragem)}" inputmode="numeric" placeholder="0"><em>mm</em></div></div>
+          <div><label for="o-pedireito">Pé-direito</label><div class="input-suffix"><input id="o-pedireito" value="${esc(dados.pedireito)}" inputmode="numeric"><em>mm</em></div></div>
           <div><label for="o-portas">Portas</label><div class="input-suffix"><input id="o-portas" value="${esc(dados.portas)}" inputmode="numeric"><em>un</em></div></div>
           <div><label for="o-desc">Desconto</label><div class="input-suffix"><input id="o-desc" value="${esc(dados.desconto)}" inputmode="decimal"><em>%</em></div></div>
         </div>
@@ -642,7 +649,7 @@ function viewOrcEditor(param){
     $('#m-paineis').textContent = c.paineis + ' un';
     $('#m-vidros').textContent = c.vidros + ' un';
     $('#m-portas').textContent = c.pts + ' un';
-    $('#m-area').textContent = `Área: ${fmt(c.area, 1)} m²`;
+    $('#m-area').textContent = `${fmt(c.mmL)} × ${fmt(c.mmH)} mm · área ${fmt(c.area, 1)} m²`;
     $('#m-bruto').textContent = c.dsc ? `Sem desconto: ${brl(c.bruto)}` : '';
     $('#o-total').textContent = brl(c.total);
     const aviso = $('#o-aviso');
@@ -659,10 +666,10 @@ function viewOrcEditor(param){
 
   function valida(){
     const d = ler(); let ok = true;
-    [['o-cliente', d.cliente], ['o-metragem', num(d.metragem) > 0 ? 'ok' : '']].forEach(([id, v]) => {
+    [['o-cliente', d.cliente], ['o-metragem', mmVal(d.metragem) > 0 ? 'ok' : '']].forEach(([id, v]) => {
       $('#' + id).classList.toggle('invalid', !v); if (!v) ok = false;
     });
-    if (!ok) toast('Preencha o cliente e a metragem linear.', 'alert');
+    if (!ok) toast('Preencha o cliente e o comprimento linear em mm.', 'alert');
     return ok;
   }
   function salvar(statusNovo){
@@ -696,7 +703,7 @@ function viewOrcEditor(param){
       <div>${esc(o.linha)} · ${esc(o.comp)}</div>
       <table class="pr-table">
         <tr><th>Item</th><th>Quantidade</th></tr>
-        <tr><td>Metragem linear × pé-direito</td><td>${fmt(c.m, 2)} m × ${fmt(c.pd, 2)} m (${fmt(c.area, 1)} m²)</td></tr>
+        <tr><td>Comprimento linear × pé-direito</td><td>${fmt(c.mmL)} mm × ${fmt(c.mmH)} mm (${fmt(c.area, 1)} m²)</td></tr>
         <tr><td>Perfis de alumínio</td><td>${c.perfis} barras</td></tr>
         <tr><td>Painéis cegos</td><td>${c.paineis} un</td></tr>
         <tr><td>Vidros temperados</td><td>${c.vidros} un</td></tr>
@@ -717,7 +724,7 @@ function viewOrcEditor(param){
     const o = salvar(); const c = calcula(o);
     if (o.status === 'rascunho') { o.status = 'enviado'; saveDB(); }
     const msg = `*Euroflex Divisórias — Proposta ${o.id}*\n${o.cliente}${o.obra ? ' · ' + o.obra : ''}\n`
-      + `${o.linha} · ${o.comp}\n${fmt(c.m, 1)} m lineares · pé-direito ${fmt(c.pd, 2)} m · ${c.pts} porta(s)\n`
+      + `${o.linha} · ${o.comp}\n${fmt(c.mmL)} mm lineares · pé-direito ${fmt(c.mmH)} mm · ${c.pts} porta(s)\n`
       + `*Total: ${brl(c.total)}*\nValidade de 15 dias.`;
     window.open('https://wa.me/?text=' + encodeURIComponent(msg), '_blank', 'noopener');
     toast(`${o.id} marcado como enviado.`, 'send');
@@ -936,10 +943,10 @@ function viewVerificacao(){
         : diverg && !diverg.ok ? `
           <h3>Divergência encontrada</h3>
           <div class="diverg-vals">
-            <div class="diverg-box"><small>No projeto</small><div class="dv num">4,20 m</div></div>
-            <div class="diverg-box"><small>Medido na obra</small><div class="dv num">4,12 m</div></div>
+            <div class="diverg-box"><small>No projeto</small><div class="dv num">4200 mm</div></div>
+            <div class="diverg-box"><small>Medido na obra</small><div class="dv num">4120 mm</div></div>
           </div>
-          <div class="diverg-diff">Diferença de 8 cm na parede B</div>
+          <div class="diverg-diff">Diferença de 80 mm na parede B</div>
           <label for="v-obs">Observação para o projetista</label>
           <textarea id="v-obs" rows="4" placeholder="Descreva o ajuste necessário">${esc(v.obs)}</textarea>
           <a href="#" id="v-medicao" style="display:inline-block;margin-top:12px;font-size:14px;font-weight:500">Ver medição técnica e fotos</a>`
@@ -997,7 +1004,7 @@ function viewVerificacao(){
     DB.checklist.forEach(i => { i.ok = true; });
     const pj = projetoDoPedido(1044);
     if (pj){
-      const wb = pj.planta.walls.find(w => w.id === 'wB'); if (wb) wb.x2 = wb.x1 + 412;
+      const wb = pj.planta.walls.find(w => w.id === 'wB'); if (wb) wb.x2 = wb.x1 + 4120;
       pj.rev = proximaRev(pj.rev); pj.fase = 'verificacao';
       const a = pj.arquivos.find(x => x.categoria === 'Executivo');
       if (a){ a.versoes.unshift(versao(pj.rev, hoje(), 'Projetista B', { gen:'executivo', snap:clone(pj.planta) })); a.sit = 'verificacao'; }

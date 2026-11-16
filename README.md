@@ -13,8 +13,9 @@ Outra pessoa, em outro computador, não vê esses dados.
 - **Orçamentos** — calculadora que atualiza materiais e total em tempo real; gera PDF, envia resumo por WhatsApp e converte em pedido
 - **Pedidos** — quadro kanban: arraste os cartões entre as colunas ou clique neles
 - **Projetos** — área dos arquitetos: lista de projetos com miniatura da planta e, em cada projeto,
-  visão geral editável, **editor de planta** (desenhar divisórias e portas, com metragem automática
-  e geração de orçamento), **arquivos** com envio real (PDF, imagens, DWG…), visualizador dentro do
+  visão geral editável, **editor de planta estilo CAD em milímetros** (linha de comando com `4200`,
+  `@dx,dy`, `dist<ângulo` e `X,Y`; ORTO/OSNAP/GRADE; alças; cotas técnicas; geração de orçamento),
+  **elevações** de cada parede com modulação, alturas e lista de peças exportável, **arquivos** com envio real (PDF, imagens, DWG…), visualizador dentro do
   sistema, revisões e situação, **discussão** da equipe e histórico. Os documentos de exemplo
   (projeto executivo, memorial, proposta) são PDFs gerados a partir da planta.
 - **Verificação** — checklist técnico com divergência de medida; ao conferir tudo, libera para produção
