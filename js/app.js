@@ -147,19 +147,7 @@ function seed(){
       orcSeed('ORC-2281','Cliente N','Sala de reuniões','Divisória articulável','Misto: vidro + painel cego','11','2,7','1','3','aprovado','09/11','Vendedor B'),
       orcSeed('ORC-2279','Cliente A','Sede administrativa','Europrata 90 mm','Misto: vidro + painel cego','15','2,8','2','0','aprovado','07/11','Vendedor A'),
     ],
-    arquivos: [
-      { doc:'Planta de layout',                tipo:'DWG',      rev:'R02',   sit:'Aprovada',       cor:'green' },
-      { doc:'Projeto executivo de divisórias', tipo:'PDF',      rev:'R01',   sit:'Em verificação', cor:'cyan'  },
-      { doc:'Medição técnica',                 tipo:'18 fotos', rev:'12/11', sit:'Arquivada',      cor:'gray'  },
-      { doc:'Memorial descritivo',             tipo:'PDF',      rev:'R01',   sit:'Arquivado',      cor:'gray'  },
-      { doc:'Proposta comercial',              tipo:'PDF',      rev:'v3',    sit:'Aceita',         cor:'green' },
-    ],
-    histProjeto: [
-      { t:'Projeto executivo R01 enviado para verificação', quem:'Projetista', quando:'14/11, 16:40' },
-      { t:'Planta de layout R02 aprovada pelo cliente',     quem:'Aceite digital', quando:'13/11, 10:12' },
-      { t:'Medição técnica anexada com 18 fotos',           quem:'Equipe de medição', quando:'12/11, 15:05' },
-      { t:'Proposta comercial v3 aceita',                   quem:'Vendedor A', quando:'08/11, 09:30' },
-    ],
+    projetos: seedProjetos(),
     checklist: [
       { t:'Vãos de porta e sentido de abertura',         ok:true  },
       { t:'Pé-direito e altura dos painéis',             ok:true  },
@@ -172,14 +160,16 @@ function seed(){
   };
 }
 
-const KEY = 'eurohub-v2';
+const KEY = 'eurohub-v3';
 let DB;
 function loadDB(){
   try { DB = JSON.parse(localStorage.getItem(KEY)); } catch (e) { DB = null; }
-  if (!DB || !Array.isArray(DB.pedidos) || !Array.isArray(DB.orcamentos)) DB = seed();
+  if (!DB || !Array.isArray(DB.pedidos) || !Array.isArray(DB.orcamentos) || !Array.isArray(DB.projetos)) DB = seed();
 }
-function saveDB(){ try { localStorage.setItem(KEY, JSON.stringify(DB)); } catch (e) {} }
-loadDB();
+function saveDB(){
+  try { localStorage.setItem(KEY, JSON.stringify(DB)); }
+  catch (e) { toast('Não foi possível salvar: o armazenamento do navegador está cheio.', 'alert'); }
+}
 
 /* ============================================================
    SESSÃO
@@ -236,6 +226,8 @@ function closePops(){ $('#notif-pop').hidden = true; $('#avatar-pop').hidden = t
 document.addEventListener('click', e => { if (!e.target.closest('.pop-wrap')) closePops(); });
 document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
+  if (!$('#modal-back').hidden){ closeModal(); return; }
+  if (typeof fecharViewer === 'function' && fecharViewer()) return;
   if (!$('#modal-back').hidden) closeModal();
   else if ($('#drawer-root').innerHTML) closeDrawer();
   else closePops();
@@ -288,7 +280,10 @@ $('#btn-sair').addEventListener('click', () => {
 $('#btn-reset').addEventListener('click', () => {
   closePops();
   confirmar('Restaurar demonstração', 'Os pedidos, orçamentos e verificações voltam ao estado original. Deseja continuar?',
-    'Restaurar', () => { DB = seed(); saveDB(); render(); toast('Dados da demonstração restaurados.', 'refresh'); }, true);
+    'Restaurar', () => {
+      DB = seed(); saveDB(); if (typeof FileStore !== 'undefined') FileStore.clear();
+      render(); toast('Dados da demonstração restaurados.', 'refresh');
+    }, true);
 });
 
 function notificacoes(){
@@ -361,7 +356,7 @@ const searchField = (id, label, ph, val) => `
 
 function rota(){
   const parts = (location.hash || '').replace(/^#\/?/, '').split('/');
-  return { r: parts[0] || '', p: decodeURIComponent(parts[1] || '') };
+  return { r: parts[0] || '', p: decodeURIComponent(parts[1] || ''), q: decodeURIComponent(parts[2] || '') };
 }
 
 function render(){
@@ -375,6 +370,7 @@ function render(){
   if (!VIEWS[r] && location.hash !== '#/painel'){ history.replaceState(null, '', '#/painel'); }
   $('#view-login').hidden = true; $('#app').hidden = false;
   closeDrawer(); closePops(); closeModal();
+  if (typeof fecharViewer === 'function') fecharViewer();
   window.onbeforeunload = null;
 
   const u = usuario();
@@ -385,7 +381,7 @@ function render(){
   renderNotif();
   const content = $('#content');
   content.style.animation = 'none'; void content.offsetWidth; content.style.animation = '';
-  VIEWS[route](p);
+  VIEWS[route](p, rota().q);
   document.title = $('#page-title').textContent + ' · EuroHub';
   window.scrollTo(0, 0);
 }
@@ -839,6 +835,9 @@ function abrirPedido(id){
         <div><small>Responsável</small><b>${esc(EQUIPE[p.resp] || '—')}</b></div>
         <div><small>Situação</small><b>${esc(p.nota)}</b></div>
         <div><small>Origem</small><b>${orc ? `<a href="#/orcamentos/${esc(orc.id)}">${esc(orc.id)}</a>` : 'Pedido direto'}</b></div>
+        <div><small>Projeto</small><b>${(() => { const pj = typeof projetoDoPedido === 'function' && projetoDoPedido(p.id);
+          return pj ? `<a href="#/projetos/${esc(pj.id)}">${esc(pj.id)} · ${faseNome(pj.fase)}</a>` : 'Sem projeto'; })()}</b></div>
+        <div><small>Cidade</small><b>${esc(p.cidade || '—')}</b></div>
       </div>
       <div class="sub-title">Histórico</div>
       <ul class="timeline">${(p.hist || []).map((h, i) => `<li class="${i === 0 ? 'now' : ''}"><b>${esc(h.t)}</b><small>${esc(h.quem)} · ${esc(h.quando)}</small></li>`).join('')
@@ -883,68 +882,6 @@ function modalNovoPedido(){
     saveDB(); closeModal(); viewPedidos(); renderNav('pedidos');
     toast(`Pedido #${id} criado.`);
   }));
-}
-
-/* ============================================================
-   PROJETOS
-============================================================ */
-let filtroProj = '';
-function viewProjetos(){
-  setHeader('Projetos', '[Cliente] · Sede administrativa · Pedido #1044');
-  $('#topbar-actions').innerHTML = searchField('busca-proj', 'Buscar', 'Documento ou tipo', filtroProj)
-    + `<button class="btn btn-primary" id="btn-arquivo">${ico('upload')}Enviar arquivo</button>`;
-  $('#busca-proj').addEventListener('input', e => { filtroProj = e.target.value; desenhaArquivos(); });
-
-  $('#content').innerHTML = `
-    <div class="grid-75">
-      <div class="card card-pad">
-        <div class="card-head"><h3>Arquivos da obra</h3><small id="arq-count"></small></div>
-        <div id="arq-tabela"></div>
-        <button class="btn btn-outline" style="margin-top:18px" id="btn-base">Usar como base de novo orçamento</button>
-      </div>
-      <div class="card card-pad">
-        <h3 style="margin-bottom:16px">Histórico de revisões</h3>
-        <ul class="timeline">${DB.histProjeto.map((h, i) => `<li class="${i === 0 ? 'now' : ''}"><b>${esc(h.t)}</b><small>${esc(h.quem)} · ${esc(h.quando)}</small></li>`).join('')}</ul>
-      </div>
-    </div>`;
-  desenhaArquivos();
-
-  $('#btn-base').addEventListener('click', () => { location.hash = '#/orcamentos/ORC-2284'; });
-  $('#btn-arquivo').addEventListener('click', () => openModal(`
-    <h3>Enviar arquivo</h3>
-    <p class="modal-sub">O arquivo entra na obra como "Em verificação" e aparece no histórico.</p>
-    <label for="ar-doc">Nome do documento</label><input id="ar-doc" placeholder="Ex.: Detalhamento de portas">
-    <div class="form-2col">
-      <div><label for="ar-tipo">Tipo</label><select id="ar-tipo"><option>PDF</option><option>DWG</option><option>Fotos</option><option>XLSX</option></select></div>
-      <div><label for="ar-rev">Revisão</label><input id="ar-rev" value="R01"></div>
-    </div>
-    <div class="modal-btns">
-      <button class="btn btn-outline" data-close>Cancelar</button>
-      <button class="btn btn-primary" id="ar-ok">${ico('upload')}Enviar</button>
-    </div>`, m => $('#ar-ok', m).addEventListener('click', () => {
-    const doc = $('#ar-doc').value.trim();
-    $('#ar-doc').classList.toggle('invalid', !doc);
-    if (!doc) return;
-    const rev = $('#ar-rev').value.trim() || 'R01';
-    DB.arquivos.unshift({ doc, tipo:$('#ar-tipo').value, rev, sit:'Em verificação', cor:'cyan' });
-    DB.histProjeto.unshift({ t:`${doc} ${rev} enviado para verificação`, quem:usuario().nome, quando:agora() });
-    saveDB(); closeModal(); viewProjetos();
-    toast('Arquivo enviado para verificação.', 'upload');
-  })));
-}
-function desenhaArquivos(){
-  const f = filtroProj.trim().toLowerCase();
-  const lista = DB.arquivos.filter(a => !f || (a.doc + ' ' + a.tipo).toLowerCase().includes(f));
-  $('#arq-count').textContent = `${lista.length} ${lista.length === 1 ? 'documento' : 'documentos'}`;
-  $('#arq-tabela').innerHTML = lista.length ? `
-    <div class="table-wrap"><table>
-      <thead><tr><th>Documento</th><th>Tipo</th><th>Revisão</th><th>Situação</th></tr></thead>
-      <tbody>${lista.map(a => `
-        <tr><td><div class="doc-cell"><span class="file-ico">${ico('file')}</span>${esc(a.doc)}</div></td>
-          <td class="td-muted">${esc(a.tipo)}</td><td>${esc(a.rev)}</td>
-          <td><span class="badge ${a.cor}">${esc(a.sit)}</span></td></tr>`).join('')}
-      </tbody></table></div>`
-    : `<div class="empty">${ico('inbox')}<div>Nenhum documento encontrado.</div></div>`;
 }
 
 /* ============================================================
@@ -1005,7 +942,7 @@ function viewVerificacao(){
           <div class="diverg-diff">Diferença de 8 cm na parede B</div>
           <label for="v-obs">Observação para o projetista</label>
           <textarea id="v-obs" rows="4" placeholder="Descreva o ajuste necessário">${esc(v.obs)}</textarea>
-          <a href="#/projetos" style="display:inline-block;margin-top:12px;font-size:14px;font-weight:500">Ver medição técnica e fotos</a>`
+          <a href="#" id="v-medicao" style="display:inline-block;margin-top:12px;font-size:14px;font-weight:500">Ver medição técnica e fotos</a>`
         : `
           <h3>Sem divergências</h3>
           <div class="resolved">${ico('check')}<span>Todos os itens conferidos. O projeto pode ser liberado para produção.</span></div>`}
@@ -1015,6 +952,14 @@ function viewVerificacao(){
   $$('.chk-row input').forEach(ch => ch.addEventListener('change', () => {
     DB.checklist[+ch.dataset.idx].ok = ch.checked; saveDB(); viewVerificacao();
   }));
+  const vm = $('#v-medicao');
+  if (vm) vm.addEventListener('click', e => {
+    e.preventDefault();
+    const pj = projetoDoPedido(1044); if (!pj) return;
+    const a = pj.arquivos.find(x => x.categoria === 'Medição');
+    location.hash = `#/projetos/${pj.id}/arquivos`;
+    if (a) setTimeout(() => abrirArquivo(pj.id, a.id), 60);
+  });
   const obs = $('#v-obs');
   if (obs) obs.addEventListener('input', () => { v.obs = obs.value; saveDB(); });
 
@@ -1025,16 +970,23 @@ function viewVerificacao(){
       toast('Escreva a observação para o projetista antes de devolver.', 'alert');
       return;
     }
-    v.status = 'devolvido'; saveDB();
-    DB.histProjeto.unshift({ t:'Projeto executivo R01 devolvido ao projetista', quem:usuario().nome, quando:agora() });
-    saveDB(); render(); toast('Projeto devolvido ao projetista.', 'undo');
+    v.status = 'devolvido';
+    const pj = projetoDoPedido(1044);
+    if (pj){
+      pj.fase = 'executivo'; registrar(pj, 'Projeto executivo devolvido ao projetista');
+      const u = usuario(); pj.comentarios.push(comentario(u.nome, u.ini, agora(), v.obs, 'a2'));
+    }
+    saveDB(); render(); toast('Projeto devolvido ao projetista. A observação foi para a discussão do projeto.', 'undo');
   });
   const lib = $('#btn-liberar');
   if (lib) lib.addEventListener('click', () => {
     v.status = 'liberado';
-    const a = DB.arquivos.find(x => x.doc === 'Projeto executivo de divisórias');
-    if (a){ a.sit = 'Aprovado'; a.cor = 'green'; }
-    DB.histProjeto.unshift({ t:'Projeto executivo liberado para produção', quem:usuario().nome, quando:agora() });
+    const pj = projetoDoPedido(1044);
+    if (pj){
+      pj.fase = 'aprovado';
+      const a = pj.arquivos.find(x => x.categoria === 'Executivo'); if (a) a.sit = 'aprovado';
+      registrar(pj, 'Projeto executivo liberado para produção');
+    }
     saveDB();
     moverPedido(1044, 'producao', true);
     render(); toast('Projeto liberado. Pedido #1044 foi para a produção.');
@@ -1043,7 +995,14 @@ function viewVerificacao(){
   if (rv) rv.addEventListener('click', () => {
     v.status = 'andamento'; v.obs = '';
     DB.checklist.forEach(i => { i.ok = true; });
-    DB.histProjeto.unshift({ t:'Projeto executivo R02 reenviado com a parede B corrigida', quem:'Projetista', quando:agora() });
+    const pj = projetoDoPedido(1044);
+    if (pj){
+      const wb = pj.planta.walls.find(w => w.id === 'wB'); if (wb) wb.x2 = wb.x1 + 412;
+      pj.rev = proximaRev(pj.rev); pj.fase = 'verificacao';
+      const a = pj.arquivos.find(x => x.categoria === 'Executivo');
+      if (a){ a.versoes.unshift(versao(pj.rev, hoje(), 'Projetista B', { gen:'executivo', snap:clone(pj.planta) })); a.sit = 'verificacao'; }
+      registrar(pj, `Projeto executivo ${pj.rev} reenviado com a parede B corrigida`, 'Projetista B');
+    }
     saveDB(); render(); toast('Projetista reenviou o projeto corrigido (R02).', 'file');
   });
   const vp = $('#btn-ver-ped');
@@ -1151,7 +1110,7 @@ function desenhaClientes(){
    INICIALIZAÇÃO
 ============================================================ */
 const VIEWS = {
-  painel:viewPainel, orcamentos:viewOrcamentos, pedidos:viewPedidos, projetos:viewProjetos,
+  painel:viewPainel, orcamentos:viewOrcamentos, pedidos:viewPedidos, projetos:(p, q) => viewProjetos(p, q),
   verificacao:viewVerificacao, producao:viewProducao, instalacao:viewInstalacao, clientes:viewClientes,
 };
-render();
+document.addEventListener('DOMContentLoaded', () => { loadDB(); render(); });
