@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EuroHub · Euroflex Divisórias</title>
+<meta name="description" content="Do orçamento à instalação, cada obra em um só lugar. Demonstração com dados ilustrativos.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<!-- ===================== LOGIN ===================== -->
+<div id="view-login" class="login-wrap" hidden>
+  <div class="login-left">
+    <div class="brand">
+      <div class="brand-logo">EURO<span>HUB</span></div>
+      <div class="brand-sub">Euroflex Divisórias</div>
+    </div>
+    <div class="login-hero">
+      <div class="hero-bar"></div>
+      <h1>Do orçamento à instalação, cada obra em um só lugar.</h1>
+      <p>Pedidos, projetos armazenados e verificação técnica para toda a equipe.</p>
+    </div>
+    <div class="login-foot">Acesso restrito à equipe Euroflex</div>
+  </div>
+  <div class="login-right">
+    <form class="login-card" id="login-form" autocomplete="off">
+      <h2>Entrar</h2>
+      <p class="login-help">Use o e-mail e a senha cadastrados pelo gestor.</p>
+      <label for="login-email">E-mail</label>
+      <input id="login-email" type="email" placeholder="nome@empresa.com.br" required>
+      <label for="login-senha">Senha</label>
+      <input id="login-senha" type="password" placeholder="" required>
+      <div class="login-row">
+        <label class="check"><input type="checkbox" id="login-keep"> Manter conectado</label>
+        <a href="#" id="login-forgot">Esqueci a senha</a>
+      </div>
+      <button type="submit" class="btn btn-primary btn-block">Entrar</button>
+      <p class="login-client">Cliente? <a href="#" id="login-portal">Acesse o portal do cliente</a></p>
+    </form>
+  </div>
+</div>
+
+<!-- ===================== APP SHELL ===================== -->
+<div id="app" class="app" hidden>
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-logo">EURO<span>HUB</span></div>
+      <div class="brand-sub">Euroflex Divisórias</div>
+    </div>
+    <nav class="nav" id="nav">
+      <a href="#/painel" data-route="painel"><i class="dot"></i>Painel</a>
+      <a href="#/orcamentos" data-route="orcamentos"><i class="dot"></i>Orçamentos</a>
+      <a href="#/pedidos" data-route="pedidos"><i class="dot"></i>Pedidos</a>
+      <a href="#/projetos" data-route="projetos"><i class="dot"></i>Projetos</a>
+      <a href="#/verificacao" data-route="verificacao"><i class="dot"></i>Verificação</a>
+      <a href="#/producao" data-route="producao"><i class="dot"></i>Produção</a>
+      <a href="#/instalacao" data-route="instalacao"><i class="dot"></i>Instalação</a>
+      <a href="#/clientes" data-route="clientes"><i class="dot"></i>Clientes e obras</a>
+    </nav>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">
+        <h1 id="page-title">Painel do gestor</h1>
+        <p id="page-sub">Novembro · dados ilustrativos</p>
+      </div>
+      <div class="topbar-actions" id="topbar-actions"></div>
+      <div class="avatar-wrap">
+        <button class="avatar" id="avatar-btn" title="Conta">GE</button>
+        <div class="avatar-menu" id="avatar-menu" hidden>
+          <div class="avatar-menu-head">Gestor Euroflex<br><small id="avatar-email">gestor@euroflex.com.br</small></div>
+          <button id="btn-sair">Sair</button>
+        </div>
+      </div>
+    </header>
+
+    <div class="content" id="content"><!-- views renderizadas pelo app.js --></div>
+  </main>
+</div>
+
+<!-- ===================== MODAIS / TOAST ===================== -->
+<div class="modal-back" id="modal-back" hidden>
+  <div class="modal" id="modal" role="dialog" aria-modal="true"></div>
+</div>
+<div class="toast" id="toast" hidden></div>
+
+<!-- Área de impressão da proposta (Gerar PDF) -->
+<div id="print-area" class="print-area" aria-hidden="true"></div>
+
+<script src="js/app.js"></script>
+</body>
+</html>
