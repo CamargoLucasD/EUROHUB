@@ -21,6 +21,7 @@ Object.assign(PATHS, {
   redo:'<path d="m15 14 5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h3"/>',
   split:'<rect x="3" y="5" width="18" height="14" rx="1"/><path d="M12 2v20"/>',
   flip:'<path d="M12 3v18"/><path d="M16 7l4 5-4 5M8 7l-4 5 4 5"/>',
+  perfil:'<path d="M3 12h18"/><rect x="10" y="6" width="4" height="12" rx="1"/>',
 });
 
 /* ============================================================
@@ -1953,9 +1954,10 @@ const PROMPTS = {
   wall2:'LINHA  Próximo ponto (comprimento, @dx,dy ou dist<ângulo) [Enter encerra]:',
   door:'PORTA  Clique sobre uma parede:',
   erase:'APAGAR  Clique no objeto:',
+  perfil:'PERFIL  Clique sobre a divisória ou digite a distância do início [Enter encerra]:',
 };
 const COMANDOS = {
-  L:'wall', LINHA:'wall', D:'wall', DIV:'wall', DIVISORIA:'wall', P:'door', PORTA:'door', E:'erase', APAGAR:'erase',
+  L:'wall', LINHA:'wall', D:'wall', DIV:'wall', DIVISORIA:'wall', P:'door', PORTA:'door', M:'perfil', MONTANTE:'perfil', PERFIL:'perfil', PF:'perfil', E:'erase', APAGAR:'erase',
   S:'select', SEL:'select', U:'undo', DESFAZER:'undo', R:'redo', REFAZER:'redo', Z:'fit', ZOOM:'fit', ESC:'esc',
 };
 const dispY = y => -y;
@@ -1968,6 +1970,7 @@ function abaPlanta(proj){
           <button class="tool" data-tool="select" title="Selecionar (comando S)">${ico('pointer')}<span class="lbl">Selecionar</span></button>
           <button class="tool" data-tool="wall" title="Divisória (comando L)">${ico('wall')}<span class="lbl">Divisória</span></button>
           <button class="tool" data-tool="door" title="Porta (comando P)">${ico('door')}<span class="lbl">Porta</span></button>
+          <button class="tool" data-tool="perfil" title="Perfil / montante, um por um (comando M)">${ico('perfil')}<span class="lbl">Perfil</span></button>
           <button class="tool" data-tool="erase" title="Apagar (comando E)">${ico('eraser')}<span class="lbl">Apagar</span></button>
           <span class="tool-sep"></span>
           <select class="tool-select" id="ed-tipo" aria-label="Tipo da nova divisória">${Object.keys(TIPOS_PAREDE).map(k => `<option value="${k}">${TIPOS_PAREDE[k].nome}</option>`).join('')}</select>
@@ -2042,6 +2045,10 @@ function abaPlanta(proj){
     if (grip){
       const w = ED.plan.walls.find(x => x.id === ED.sel.id);
       ED.drag = { grip, w, orig:Object.assign({}, w), snap:JSON.stringify(ED.plan), gx:(w.x1 + w.x2) / 2, gy:(w.y1 + w.y2) / 2 };
+    } else if (e.button === 0 && ED.tool === 'select' && (edHit(p) || {}).kind === 'perfil'){
+      const h = edHit(p), w = ED.plan.walls.find(x => x.id === h.id);
+      ED.sel = h; ED.snapPt = null; ED.drag = { perfil:true, w, x:h.x, x0:h.x, snap:JSON.stringify(ED.plan) };
+      edRender(); edPainel();
     } else if (e.button === 1 || (ED.tool === 'select' && !edHit(p))){ ED.panning = true; canvas.classList.add('panning'); }
     try { svg.setPointerCapture(e.pointerId); } catch (err) {}
   });
@@ -2059,6 +2066,10 @@ function abaPlanta(proj){
     const d = ED.down; ED.down = null;
     if (ED.drag){
       const dr = ED.drag; ED.drag = null;
+      if (dr.perfil){
+        if (d && d.moved && dr.x !== dr.x0){ ED.undo.push(dr.snap); ED.redo = []; edSalvar(); edLog(`Montante movido · ${dec(dr.x)} mm do início da parede ${letras(ED.plan)[dr.w.id] || ''}`); }
+        return;
+      }
       if (d && d.moved){ ED.undo.push(dr.snap); ED.redo = []; edSalvar(); edLog(`Parede ${letras(ED.plan)[dr.w.id] || ''} ajustada · ${cotaTxt(wallLen(dr.w))} mm`); }
       return;
     }
@@ -2103,7 +2114,8 @@ function edTool(t, silencioso){
   if (t !== 'select') ED.sel = null;
   if (t !== 'select') ED.ultimoCmd = t;
   $$('[data-tool]').forEach(b => b.classList.toggle('active', b.dataset.tool === t));
-  if (!silencioso && t !== 'select') edLog({ wall:'LINHA', door:'PORTA', erase:'APAGAR' }[t]);
+  if (t === 'perfil' && !ED.perfis){ ED.perfis = true; edAtualizaChips(); }
+  if (!silencioso && t !== 'select') edLog({ wall:'LINHA', door:'PORTA', erase:'APAGAR', perfil:'PERFIL' }[t]);
   edRender(); edPreview(); edPainel();
 }
 function edEsc(){
@@ -2156,11 +2168,17 @@ function edComando(v){
     edPontoParede({ x:r1(p.x), y:r1(p.y) }, `> ${txt}`);
     return;
   }
+  if (ED.tool === 'perfil'){
+    const v = numPlano(txt), w = ED.plan.walls.find(x => x.id === ED.perfWall);
+    if (isNaN(v)){ edLog(`Entrada inválida: ${txt}  (digite a distância em mm, ex.: 1200)`); return; }
+    if (!w){ edLog('Passe o mouse sobre a divisória e digite a distância do início'); return; }
+    edLog(`> ${txt}`); edPerfilInserir(w, r1(v)); return;
+  }
   if (ED.tool === 'select' && /^-?\d+(\.\d+)?[,;]-?\d+(\.\d+)?$/.test(txt.replace(/\s+/g, ''))){
     edTool('wall'); const p = edParse(txt);
     if (p){ edPontoParede({ x:r1(p.x), y:r1(p.y) }, `> ${txt}`); return; }
   }
-  edLog(`Comando desconhecido: ${txt}  (L divisória · P porta · E apagar · S selecionar · U desfazer · Z ajustar)`);
+  edLog(`Comando desconhecido: ${txt}  (L divisória · P porta · M perfil · E apagar · S selecionar · U desfazer · Z ajustar)`);
 }
 
 /* ---------- Encaixes (OSNAP) ---------- */
@@ -2213,8 +2231,71 @@ function edHit(p){
     const g = doorGeo(ED.plan, d);
     if (g && Math.hypot(p.x - g.cx, p.y - g.cy) < g.dw / 2 + tol) return { kind:'door', id:d.id };
   }
+  if (ED.perfis){
+    let best = null, bd = 9 * edEscala();
+    ED.plan.walls.forEach(w => { if (w.tipo === 'alvenaria') return;
+      montantesMoveis(edMods(w)).forEach(x => { const c = edPerfilPt(w, x), dd = Math.hypot(c.x - p.x, c.y - p.y); if (dd < bd){ bd = dd; best = { kind:'perfil', id:w.id, x }; } }); });
+    if (best) return best;
+  }
   const w = edWallPerto(p, 10);
   return w ? { kind:'wall', id:w.w.id } : null;
+}
+
+/* ---------- Perfis (montantes) colocados um por um ---------- */
+const edMods = w => modulosParede(ED.plan, w, elevCfg(ED.proj, w));
+function edElev(w){
+  const e = w.elev = w.elev || {};
+  if (!e.cortes) e.cortes = cortesAuto(ED.plan, w, elevCfg(ED.proj, w));
+  if (!e.attr) e.attr = {};
+  return e;
+}
+function edPerfilPt(w, x){ const L = wallLen(w); return { x:w.x1 + (w.x2 - w.x1) / L * x, y:w.y1 + (w.y2 - w.y1) / L * x }; }
+function edPerfilMarca(w, x, cor, k, op){
+  const L = wallLen(w), ux = (w.x2 - w.x1) / L, uy = (w.y2 - w.y1) / L, c = edPerfilPt(w, x);
+  const m = Math.max(PERFIL, 11 * k * 0.28) / 2 + 2 * k, esp = (TIPOS_PAREDE[w.tipo] || { esp:90 }).esp + Math.max(40, 11 * k * 0.35) + 5 * k;
+  return `<line x1="${r1(c.x - ux * m)}" y1="${r1(c.y - uy * m)}" x2="${r1(c.x + ux * m)}" y2="${r1(c.y + uy * m)}" stroke="${cor}" stroke-opacity="${op || 1}" stroke-width="${r1(esp)}"/>`;
+}
+function edPerfilModulo(w, x){ return edMods(w).find(m => m.tipo !== 'porta' && x > m.x && x < m.x + m.w); }
+function edPerfilErro(w, x){
+  const m = edPerfilModulo(w, x);
+  if (!m) return 'Aqui não cabe: fica sobre uma porta, sobre outro montante ou fora da divisória';
+  if (x - m.x < MIN_MOD || m.x + m.w - x < MIN_MOD) return `Muito perto de outro perfil (mínimo ${MIN_MOD} mm de cada lado)`;
+  return null;
+}
+/* Posição ao longo da parede para o ponto p: grade de 10 mm e encaixe no meio do módulo. */
+function edPerfilPos(w, p){
+  const L = wallLen(w), st = ED.grade ? 10 : 1; let x = Math.round(projSeg(p, w).t * L / st) * st, meio = false;
+  const m = edPerfilModulo(w, Math.min(Math.max(x, 1), L - 1));
+  if (ED.osnap && m && Math.abs(x - (m.x + m.w / 2)) < 10 * edEscala()){ x = r1(m.x + m.w / 2); meio = true; }
+  return { x, meio, m };
+}
+function edPerfilInserir(w, x){
+  if (w.tipo === 'alvenaria'){ edLog('Perfis só entram em divisórias, não na alvenaria'); return false; }
+  const erro = edPerfilErro(w, x); if (erro){ edLog(erro); return false; }
+  const m = edPerfilModulo(w, x);
+  edCommit(() => {
+    const e = edElev(w); e.cortes.push(x); e.cortes.sort((a, b) => a - b);
+    const pai = e.attr[String(Math.round(m.x))]; if (pai) e.attr[String(Math.round(x))] = Object.assign({}, pai);
+  });
+  edLog(`Montante colocado na parede ${letras(ED.plan)[w.id] || ''} a ${dec(x)} mm do início · módulos de ${dec(x - m.x)} e ${dec(m.x + m.w - x)} mm`);
+  return true;
+}
+function edPerfilLimites(w, x){
+  const bs = [0]; edMods(w).forEach(m => bs.push(m.x + m.w));
+  let a = 0, b = wallLen(w);
+  bs.forEach(v => { if (v < x - 0.6 && v > a) a = v; if (v > x + 0.6 && v < b) b = v; });
+  return [a + MIN_MOD, b - MIN_MOD];
+}
+function edPerfilMove(w, x0, x1){
+  const e = edElev(w), i = e.cortes.findIndex(c => Math.abs(c - x0) < 0.6); if (i < 0) return false;
+  e.cortes[i] = x1; e.cortes.sort((a, b) => a - b);
+  const k0 = String(Math.round(x0)), k1 = String(Math.round(x1));
+  if (k0 !== k1 && e.attr[k0]){ e.attr[k1] = e.attr[k0]; delete e.attr[k0]; }
+  return true;
+}
+function edPerfilDel(w, x){
+  const e = edElev(w), i = e.cortes.findIndex(c => Math.abs(c - x) < 0.6); if (i < 0) return false;
+  e.cortes.splice(i, 1); delete e.attr[String(Math.round(x))]; return true;
 }
 function edGrip(p){
   if (!ED.sel || ED.sel.kind !== 'wall') return null;
@@ -2225,6 +2306,13 @@ function edGrip(p){
   return null;
 }
 function edArrasta(p){
+  if (ED.drag.perfil){
+    const dr = ED.drag, st = ED.grade ? 10 : 1, lim = edPerfilLimites(dr.w, dr.x);
+    if (lim[0] > lim[1]) return;
+    const nx = Math.min(Math.max(Math.round(projSeg(p, dr.w).t * wallLen(dr.w) / st) * st, lim[0]), lim[1]);
+    if (nx !== dr.x && edPerfilMove(dr.w, dr.x, nx)){ dr.x = nx; ED.sel = { kind:'perfil', id:dr.w.id, x:nx }; }
+    edRender(); edPainel(); return;
+  }
   const d = ED.drag, w = d.w, o = d.orig, excl = [w.id + ':1', w.id + ':2', w.id + ':m'];
   if (d.grip === 'mid'){
     const t = edSnap(p, { x:d.gx, y:d.gy }, excl), dx = t.x - d.gx, dy = t.y - d.gy;
@@ -2254,6 +2342,11 @@ function edRedo(){ if (!ED.redo.length){ edLog('Nada para refazer'); return; } E
 function edRemover(hit){
   if (!hit) return;
   const Ls = letras(ED.plan);
+  if (hit.kind === 'perfil'){
+    const w = ED.plan.walls.find(x => x.id === hit.id); if (!w) return;
+    edCommit(() => { edPerfilDel(w, hit.x); ED.sel = null; });
+    edLog(`Montante retirado da parede ${Ls[w.id] || ''}`); return;
+  }
   edCommit(() => {
     if (hit.kind === 'door') ED.plan.doors = ED.plan.doors.filter(d => d.id !== hit.id);
     else { ED.plan.walls = ED.plan.walls.filter(w => w.id !== hit.id); ED.plan.doors = ED.plan.doors.filter(d => d.wall !== hit.id); }
@@ -2267,7 +2360,7 @@ function edPontoParede(pt, eco){
   const L = Math.hypot(pt.x - ED.start.x, pt.y - ED.start.y);
   if (L < 10){ edLog('Comprimento muito pequeno (mínimo 10 mm)'); return; }
   const a = ED.start, id = uid('w');
-  edCommit(() => ED.plan.walls.push({ id, x1:a.x, y1:a.y, x2:pt.x, y2:pt.y, tipo:ED.tipo }));
+  edCommit(() => ED.plan.walls.push(Object.assign({ id, x1:a.x, y1:a.y, x2:pt.x, y2:pt.y, tipo:ED.tipo }, ED.plan.autoPerfis === false ? { elev:{ cortes:[], attr:{} } } : {})));
   const w = ED.plan.walls.find(x => x.id === id);
   edLog(`Parede ${letras(ED.plan)[id] || ''} criada · ${dec(L)} mm < ${dec(anguloCAD(w))}°`);
   ED.start = { x:pt.x, y:pt.y }; edPreview();
@@ -2287,6 +2380,10 @@ function edClick(p){
     edLog(`Porta de ${dw} mm inserida a ${cotaTxt(t * L - dw / 2)} mm do início da parede`);
     return;
   }
+  if (ED.tool === 'perfil'){
+    const near = edWallPerto(p, 16); if (!near){ edLog('Clique sobre uma divisória'); return; }
+    ED.perfWall = near.w.id; edPerfilInserir(near.w, edPerfilPos(near.w, p).x); return;
+  }
   if (ED.tool === 'erase'){ const h = edHit(p); if (h) edRemover(h); else edLog('Nada selecionado'); return; }
   ED.sel = edHit(p); edRender(); edPainel();
 }
@@ -2295,6 +2392,10 @@ function edClick(p){
 function edRender(){
   const g = $('#plan-layer'); if (!g || !ED) return;
   g.innerHTML = planMarkup(ED.plan, { labels:ED.cotas, perfis:ED.perfis, sel:ED.sel, fs:11 * edEscala(), hi:ED.sel && ED.sel.kind === 'wall' ? ED.sel.id : null });
+  if (ED.sel && ED.sel.kind === 'perfil'){
+    const w = ED.plan.walls.find(x => x.id === ED.sel.id);
+    if (w) g.innerHTML += edPerfilMarca(w, ED.sel.x, '#1f8fd6', edEscala());
+  }
 }
 function edMarcador(sp, k){
   const s = 6 * k, c = '#0b8fb3', sw = r1(2 * k);
@@ -2331,6 +2432,17 @@ function edPreview(){
         }
       }
       if (ED.osnap) s += edMarcador(sp, k);
+    } else if (ED.drag && ED.drag.perfil){
+      s += edDica(h.x + 16 * k, h.y - 22 * k, `${dec(ED.drag.x)} mm do início`, k);
+    } else if (ED.tool === 'perfil'){
+      const near = edWallPerto(h, 16);
+      if (near && near.w.tipo !== 'alvenaria'){
+        ED.perfWall = near.w.id;
+        const ps = edPerfilPos(near.w, h), erro = edPerfilErro(near.w, ps.x), m = edPerfilModulo(near.w, ps.x);
+        if (ps.x > 0 && ps.x < wallLen(near.w)) s += edPerfilMarca(near.w, ps.x, erro ? '#e0533f' : '#0b8fb3', k, .75);
+        if (ps.meio && !erro){ const c = edPerfilPt(near.w, ps.x); s += edMarcador({ x:c.x, y:c.y, kind:'meio' }, k); }
+        s += edDica(h.x + 16 * k, h.y - 22 * k, erro || !m ? 'não cabe aqui' : `${dec(ps.x)} mm do início · ${dec(ps.x - m.x)} | ${dec(m.x + m.w - ps.x)}`, k);
+      }
     } else if (ED.drag && ED.snapPt){
       s += edMarcador(ED.snapPt, k);
       s += edDica(h.x + 16 * k, h.y - 22 * k, `${dec(wallLen(ED.drag.w))} mm`, k);
@@ -2351,7 +2463,8 @@ function edPreview(){
       const hit = grip ? null : edHit(h);
       if (hit){
         const cor = ED.tool === 'erase' ? '#e0533f' : '#53d4f0';
-        if (hit.kind === 'wall'){ const w = ED.plan.walls.find(x => x.id === hit.id); s += `<line x1="${w.x1}" y1="${w.y1}" x2="${w.x2}" y2="${w.y2}" stroke="${cor}" stroke-opacity=".35" stroke-width="${r1(14 * k)}" stroke-linecap="round"/>`; }
+        if (hit.kind === 'perfil'){ const w = ED.plan.walls.find(x => x.id === hit.id); s += edPerfilMarca(w, hit.x, cor, k, .6); }
+        else if (hit.kind === 'wall'){ const w = ED.plan.walls.find(x => x.id === hit.id); s += `<line x1="${w.x1}" y1="${w.y1}" x2="${w.x2}" y2="${w.y2}" stroke="${cor}" stroke-opacity=".35" stroke-width="${r1(14 * k)}" stroke-linecap="round"/>`; }
         else { const g2 = doorGeo(ED.plan, ED.plan.doors.find(d => d.id === hit.id)); s += `<circle cx="${r1(g2.cx)}" cy="${r1(g2.cy)}" r="${g2.dw * 0.7}" fill="${cor}" fill-opacity=".18" stroke="${cor}" stroke-width="${r1(2 * k)}"/>`; }
       }
     }
@@ -2381,7 +2494,13 @@ function edPainel(){
         ${w.tipo !== 'alvenaria' ? `<button class="btn btn-outline btn-sm" id="pp-elev">${ico('elev')}Ver elevação</button>` : ''}
         <button class="btn btn-danger btn-sm" id="pp-del">${ico('trash')}Excluir</button>
       </div>
-      ${w.tipo !== 'alvenaria' ? (() => { const ms = modulosParede(plan, w, elevCfg(ED.proj, w)); return `<p class="form-note">${ico('elev')}${ms.length} ${ms.length === 1 ? 'módulo' : 'módulos'} · ${ms.length + 1} montantes nesta parede (edite na elevação).</p>`; })() : ''}
+      ${w.tipo !== 'alvenaria' ? (() => { const ms = edMods(w); return `<div class="prop-sec">Perfis desta parede</div>
+        <p class="prop-empty" style="margin:0 0 8px">${ms.length} ${ms.length === 1 ? 'módulo' : 'módulos'} · ${ms.length + 1} montantes</p>
+        <div class="btn-row" style="margin-top:0">
+          <button class="btn btn-outline btn-sm" id="pp-pf">${ico('perfil')}Colocar perfil</button>
+          <button class="btn btn-outline btn-sm" id="pp-pfz">${ico('eraser')}Tirar os do meio</button>
+          <button class="btn btn-outline btn-sm" id="pp-pfa">${ico('refresh')}Automático</button>
+        </div>`; })() : ''}
       <p class="form-note">${ico('info')}Arraste os quadradinhos azuis para esticar ou mover a parede.</p>`;
     $('#pp-fixo').value = ED.fixo || 'ini';
     $('#pp-fixo').addEventListener('change', e => { ED.fixo = e.target.value; });
@@ -2402,6 +2521,11 @@ function edPainel(){
       ligar(id, v => { if (isNaN(v)) return edPainel(); edCommit(() => { w[k] = r1(v * sg); }); edLog(`${id.slice(3).toUpperCase()} = ${dec(v)}`); }));
     $('#pp-tipo').addEventListener('change', e => { edCommit(() => { w.tipo = e.target.value; }); edLog(`Tipo: ${TIPOS_PAREDE[w.tipo].nome}`); });
     $('#pp-del').addEventListener('click', () => edRemover(sel));
+    if ($('#pp-pf')){
+      $('#pp-pf').addEventListener('click', () => { ED.perfWall = w.id; edTool('perfil'); });
+      $('#pp-pfz').addEventListener('click', () => { edCommit(() => { edElev(w).cortes = []; }); edLog(`Parede ${Ls[w.id] || ''}: montantes do meio retirados · coloque um por um com a ferramenta Perfil`); });
+      $('#pp-pfa').addEventListener('click', () => { edCommit(() => { if (w.elev){ delete w.elev.cortes; delete w.elev.attr; } }); edLog(`Parede ${Ls[w.id] || ''}: montantes distribuídos automaticamente`); });
+    }
     const el = $('#pp-elev'); if (el) el.addEventListener('click', () => { elevSel[ED.proj.id] = w.id; location.hash = `#/projetos/${ED.proj.id}/elevacoes`; });
   } else if (sel && sel.kind === 'door'){
     const d = plan.doors.find(x => x.id === sel.id), w = d && plan.walls.find(x => x.id === d.wall);
@@ -2428,10 +2552,46 @@ function edPainel(){
     $('#pd-lado').addEventListener('click', () => edCommit(() => { d.lado = -(d.lado || 1); }));
     $('#pd-dob').addEventListener('click', () => edCommit(() => { d.inv = !d.inv; }));
     $('#pd-del').addEventListener('click', () => edRemover(sel));
+  } else if (sel && sel.kind === 'perfil'){
+    const w = plan.walls.find(x => x.id === sel.id), ms = w ? edMods(w) : [], i = ms.findIndex(m => Math.abs(m.x - sel.x) < 0.6);
+    if (!w || i < 1){ ED.sel = null; return edPainel(); }
+    const L = wallLen(w), esq = ms[i - 1], dir = ms[i];
+    P.innerHTML = `<h3>Montante</h3><p class="prop-empty" style="margin-top:4px">Perfil de alumínio na parede ${Ls[w.id]} · ${cotaTxt(L)} mm</p>
+      <div class="prop-sec">Posição</div>
+      <div class="prop-grid">${inp('pf-d', 'Distância do início', dec(sel.x))}${inp('pf-f', 'Distância do fim', dec(L - sel.x))}</div>
+      <div class="prop-sec">Módulos vizinhos</div>
+      <div class="prop-grid">${inp('pf-e', 'Largura antes', dec(esq.w))}${inp('pf-r', 'Largura depois', dec(dir.w))}</div>
+      <div class="btn-row">
+        <button class="btn btn-outline btn-sm" id="pf-elev">${ico('elev')}Ver elevação</button>
+        <button class="btn btn-danger btn-sm" id="pf-del">${ico('trash')}Excluir</button>
+      </div>
+      <p class="form-note">${ico('info')}Arraste o montante sobre a parede ou digite a medida exata.</p>`;
+    const mover = nx => {
+      const lim = edPerfilLimites(w, sel.x);
+      if (isNaN(nx) || nx < lim[0] || nx > lim[1]){ toast(`Posição entre ${cotaTxt(lim[0])} e ${cotaTxt(lim[1])} mm do início.`, 'alert'); return edPainel(); }
+      nx = r1(nx); edCommit(() => { edPerfilMove(w, sel.x, nx); ED.sel = { kind:'perfil', id:w.id, x:nx }; });
+      edLog(`Montante a ${dec(nx)} mm do início da parede ${Ls[w.id]}`);
+    };
+    const ligar = (id, fn) => { const el = $('#' + id); el.addEventListener('change', () => fn(numPlano(el.value))); el.addEventListener('keydown', e => { if (e.key === 'Enter') el.blur(); }); };
+    ligar('pf-d', v => mover(v)); ligar('pf-f', v => mover(L - v));
+    ligar('pf-e', v => mover(esq.x + v)); ligar('pf-r', v => mover(dir.x + dir.w - v));
+    $('#pf-del').addEventListener('click', () => edRemover(sel));
+    $('#pf-elev').addEventListener('click', () => { elevSel[ED.proj.id] = w.id; location.hash = `#/projetos/${ED.proj.id}/elevacoes`; });
+  } else if (ED.tool === 'perfil'){
+    P.innerHTML = `<h3>Colocar perfis</h3><div class="prop-empty" style="margin-top:8px;line-height:1.65">
+      <b>Um por um:</b> clique sobre a divisória no ponto onde vai o montante. A etiqueta mostra a distância do início e a largura dos dois módulos.<br>
+      <b>Medida exata:</b> passe o mouse sobre a divisória, digite a distância do início (ex.: <b>1200</b>) e Enter.<br>
+      <b>Ajustar:</b> com Selecionar, clique no montante para arrastar, digitar a medida ou excluir.<br>
+      <b>Enter</b> ou <b>Esc</b> encerra.</div>
+      <label class="chk-inline" style="display:flex;gap:8px;align-items:flex-start;margin-top:12px;font-size:13px;cursor:pointer">
+        <input type="checkbox" id="pf-auto" ${plan.autoPerfis === false ? '' : 'checked'} style="width:auto;margin-top:2px">
+        <span>Distribuir montantes automaticamente nas novas divisórias (desmarque para colocar todos à mão)</span></label>`;
+    $('#pf-auto').addEventListener('change', e => { plan.autoPerfis = e.target.checked; saveDB(); edLog(`Montantes automáticos em novas divisórias: ${e.target.checked ? 'ligado' : 'desligado'}`); });
   } else {
     P.innerHTML = `<h3>Como desenhar</h3><div class="prop-empty" style="margin-top:8px;line-height:1.65">
       <b>Divisória:</b> digite <b>L</b> e Enter, clique no ponto inicial e digite a medida (ex.: <b>4200</b>) seguida de Enter.<br>
       <b>Formatos:</b> <b>4200</b> na direção do mouse · <b>@4200,0</b> relativo · <b>4200&lt;90</b> polar · <b>0,6000</b> absoluto.<br>
+      <b>Perfil:</b> digite <b>M</b> e Enter e clique sobre a divisória para colocar os montantes um por um.<br>
       <b>Enter</b> ou botão direito encerra · <b>Esc</b> cancela · <b>Delete</b> exclui · <b>Ctrl+Z</b> desfaz.<br>
       <b>F8</b> ORTO · <b>F3</b> OSNAP · <b>F9</b> GRADE · roda do mouse: zoom · botão do meio: mover a vista.</div>`;
   }
