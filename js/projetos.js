@@ -203,6 +203,19 @@ function cotaSVG(x1, y1, x2, y2, off, txt, fs, cor, bg, tag){
   return o;
 }
 
+/* Montantes e batentes vistos de cima: um trecho curto sobre a parede em cada limite de módulo. */
+function montantesPlanta(plan, w, minimo){
+  const L = wallLen(w); if (L < 1 || w.tipo === 'alvenaria') return [];
+  const ux = (w.x2 - w.x1) / L, uy = (w.y2 - w.y1) / L, larg = Math.max(PERFIL, minimo || 0);
+  const mods = modulosParede(plan, w, elevCfg({}, w)), out = [];
+  for (let i = 0; i <= mods.length; i++){
+    const x = i === mods.length ? L : mods[i].x, c = Math.min(Math.max(x, larg / 2), L - larg / 2);
+    const esq = mods[i - 1], dir = mods[i];
+    out.push({ x1:w.x1 + ux * (c - larg / 2), y1:w.y1 + uy * (c - larg / 2), x2:w.x1 + ux * (c + larg / 2), y2:w.y1 + uy * (c + larg / 2),
+               porta:!!((esq && esq.tipo === 'porta') || (dir && dir.tipo === 'porta')) });
+  }
+  return out;
+}
 function planMarkup(plan, o){
   o = o || {};
   const L = letras(plan), fs = o.fs || 240, bgc = o.bgc || '#fff';
@@ -225,6 +238,12 @@ function planMarkup(plan, o){
       + `<path d="M${r1(g.out.x)} ${r1(g.out.y)} A${g.dw} ${g.dw} 0 0 ${g.sweep} ${r1(g.q.x)} ${r1(g.q.y)}" fill="none" stroke="${on ? '#0b8fb3' : '#7b8596'}" stroke-width="${r1(Math.max(g.dw / 70, fs * 0.06))}" stroke-dasharray="${r1(g.dw / 14)} ${r1(g.dw / 20)}"/>`
       + `<line x1="${r1(g.piv.x)}" y1="${r1(g.piv.y)}" x2="${r1(g.q.x)}" y2="${r1(g.q.y)}" stroke="${cor}" stroke-width="40"/>`;
   });
+  if (o.perfis || (o.labels && o.perfis !== false)){
+    plan.walls.forEach(w => montantesPlanta(plan, w, fs * 0.28).forEach(m => {
+      const esp = (TIPOS_PAREDE[w.tipo] || { esp:90 }).esp;
+      s += `<line x1="${r1(m.x1)}" y1="${r1(m.y1)}" x2="${r1(m.x2)}" y2="${r1(m.y2)}" stroke="${m.porta ? '#e08a1e' : '#0f1b40'}" stroke-width="${r1(esp + Math.max(40, fs * 0.35))}"/>`;
+    }));
+  }
   if (o.labels){
     plan.walls.forEach(w => {
       const len = wallLen(w); if (len < 1) return;
@@ -589,6 +608,10 @@ function pdfExecutivo(proj, ver){
     }
     pg.dash(false);
   });
+  plan.walls.forEach(w => montantesPlanta(plan, w, 1.4 / sc).forEach(m => {
+    pg.stroke(m.porta ? '#e08a1e' : '#0f1b40');
+    pg.line(M.X(m.x1), M.Y(m.y1), M.X(m.x2), M.Y(m.y2), Math.max((TIPOS_PAREDE[w.tipo].esp + 60) * sc, 3.4));
+  }));
   plan.walls.forEach(w => {
     const len = wallLen(w); if (len < 1) return;
     if (w.tipo === 'alvenaria'){ pdfCota(pg, M, sc, w.x1, w.y1, w.x2, w.y2, 24, cotaTxt(len), 6.5, '#8a93a3'); return; }
@@ -603,6 +626,8 @@ function pdfExecutivo(proj, ver){
     pg.fill('#1f2b44'); pg.text(68, ly, `${TIPOS_PAREDE[k].nome}: ${fmm(t.porTipo[k])} mm`, 8.5); ly -= 13;
   });
   pg.fill('#1f2b44'); pg.text(36, ly, `Total linear: ${fmm(t.total)} mm · Portas: ${t.portas} · Pé-direito: ${fmm(proj.pedireito)} mm`, 8.5, true);
+  pg.stroke('#0f1b40'); pg.line(330, 128, 330, 136, 2.4); pg.fill('#1f2b44'); pg.text(338, 129, 'Montante (perfil)', 8.5);
+  pg.stroke('#e08a1e'); pg.line(330, 113, 330, 121, 2.4); pg.text(338, 114, 'Batente de porta', 8.5);
   pg.fill('#8f6312'); pg.text(36, 34, 'Conferir todas as medidas em obra antes da produção.', 8);
   pdfCarimbo(pg, proj, ver, W, 'Planta', `1/${total}`);
   paginas.push(pg.out());
@@ -1972,6 +1997,7 @@ function abaPlanta(proj){
           <button class="cad-chip" data-tog="osnap" title="Encaixe em ponta, meio e sobre a parede">OSNAP <kbd>F3</kbd></button>
           <button class="cad-chip" data-tog="grade" title="Arredonda para 10 mm">GRADE <kbd>F9</kbd></button>
           <button class="cad-chip" data-tog="cotas" title="Mostrar cotas">COTAS</button>
+          <button class="cad-chip" data-tog="perfis" title="Mostrar montantes e batentes na planta">PERFIS</button>
           <span class="cad-unit">mm</span>
         </div>
         <div class="cad-cmd">
@@ -1985,7 +2011,7 @@ function abaPlanta(proj){
       </div>
     </div>`;
 
-  ED = { proj, plan:proj.planta, tool:'select', tipo:'misto', ortho:true, osnap:true, grade:true, cotas:true, sel:null,
+  ED = { proj, plan:proj.planta, tool:'select', tipo:'misto', ortho:true, osnap:true, grade:true, cotas:true, perfis:true, sel:null,
          start:null, hover:null, snapPt:null, vb:null, undo:[], redo:[], down:null, panning:false, drag:null, histOk:false,
          hist:['EuroHub CAD · unidades em milímetros · digite L e Enter para desenhar uma divisória'], ultimoCmd:'wall', ultimaEntrada:'' };
   const foco = edFoco[proj.id] && proj.planta.walls.find(w => w.id === edFoco[proj.id]);
@@ -2066,9 +2092,9 @@ function edZoom(f, p){
 }
 function edToggle(k){
   ED[k] = !ED[k]; edAtualizaChips();
-  const nomes = { ortho:'ORTO', osnap:'OSNAP', grade:'GRADE', cotas:'COTAS' };
+  const nomes = { ortho:'ORTO', osnap:'OSNAP', grade:'GRADE', cotas:'COTAS', perfis:'PERFIS' };
   edLog(`${nomes[k]} ${ED[k] ? 'ligado' : 'desligado'}`);
-  if (k === 'cotas') edRender();
+  if (k === 'cotas' || k === 'perfis') edRender();
   edPreview();
 }
 function edAtualizaChips(){ $$('[data-tog]').forEach(b => b.classList.toggle('on', !!ED[b.dataset.tog])); }
@@ -2268,7 +2294,7 @@ function edClick(p){
 /* ---------- Desenho ---------- */
 function edRender(){
   const g = $('#plan-layer'); if (!g || !ED) return;
-  g.innerHTML = planMarkup(ED.plan, { labels:ED.cotas, sel:ED.sel, fs:11 * edEscala(), hi:ED.sel && ED.sel.kind === 'wall' ? ED.sel.id : null });
+  g.innerHTML = planMarkup(ED.plan, { labels:ED.cotas, perfis:ED.perfis, sel:ED.sel, fs:11 * edEscala(), hi:ED.sel && ED.sel.kind === 'wall' ? ED.sel.id : null });
 }
 function edMarcador(sp, k){
   const s = 6 * k, c = '#0b8fb3', sw = r1(2 * k);
@@ -2355,6 +2381,7 @@ function edPainel(){
         ${w.tipo !== 'alvenaria' ? `<button class="btn btn-outline btn-sm" id="pp-elev">${ico('elev')}Ver elevação</button>` : ''}
         <button class="btn btn-danger btn-sm" id="pp-del">${ico('trash')}Excluir</button>
       </div>
+      ${w.tipo !== 'alvenaria' ? (() => { const ms = modulosParede(plan, w, elevCfg(ED.proj, w)); return `<p class="form-note">${ico('elev')}${ms.length} ${ms.length === 1 ? 'módulo' : 'módulos'} · ${ms.length + 1} montantes nesta parede (edite na elevação).</p>`; })() : ''}
       <p class="form-note">${ico('info')}Arraste os quadradinhos azuis para esticar ou mover a parede.</p>`;
     $('#pp-fixo').value = ED.fixo || 'ini';
     $('#pp-fixo').addEventListener('change', e => { ED.fixo = e.target.value; });
@@ -2415,11 +2442,18 @@ function edPainel(){
     <div style="margin-top:12px">${Object.keys(TIPOS_PAREDE).filter(k => k !== 'alvenaria').map(k =>
       `<div class="legend-row"><i style="background:${TIPOS_PAREDE[k].cor}"></i><span>${TIPOS_PAREDE[k].nome}</span><b class="num">${fmm(t.porTipo[k] || 0)} mm</b></div>`).join('')}
       <div class="legend-row"><i style="background:${TIPOS_PAREDE.alvenaria.cor}"></i><span>Alvenaria (não entra no total)</span></div></div>
+    ${t.total > 0 ? (() => { const pf = perfisProjeto(ED.proj).resumo, pc = f => pf.filter(f).reduce((a, r) => a + r.pecas, 0);
+      return `<div class="prop-sec">Perfis de alumínio</div>
+      <div class="legend-row"><i style="background:#0f1b40;width:6px;height:14px"></i><span>Montantes</span><b class="num">${pc(r => r.nome === 'Montante')}</b></div>
+      <div class="legend-row"><i style="background:#e08a1e;width:6px;height:14px"></i><span>Batentes de porta</span><b class="num">${pc(r => r.nome.includes('batente'))}</b></div>
+      <div class="legend-row"><i style="background:#3a4a80"></i><span>Barras de 6 m (todos os perfis)</span><b class="num">${pf.reduce((a, r) => a + r.barras, 0)}</b></div>`; })() : ''}
     <button class="btn btn-primary btn-block" id="ed-orc" style="margin-top:14px">${ico('orcamentos')}Gerar orçamento desta planta</button>
     <button class="btn btn-outline btn-block" id="ed-elev" style="margin-top:8px">${ico('elev')}Ver elevações</button>
+    <button class="btn btn-outline btn-block" id="ed-mat" style="margin-top:8px">${ico('pedidos')}Ver lista de materiais</button>
     <button class="btn btn-outline btn-block" id="ed-rev" style="margin-top:8px">${ico('save')}Salvar como revisão ${esc(proximaRev(ED.proj.rev))}</button>`;
   $('#ed-orc').addEventListener('click', () => orcamentoDaPlanta(ED.proj));
   $('#ed-elev').addEventListener('click', () => { location.hash = `#/projetos/${ED.proj.id}/elevacoes`; });
+  $('#ed-mat').addEventListener('click', () => { location.hash = `#/projetos/${ED.proj.id}/materiais`; });
   $('#ed-rev').addEventListener('click', () => salvarRevisaoPlanta(ED.proj));
 }
 
