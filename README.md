@@ -15,7 +15,9 @@ Outra pessoa, em outro computador, não vê esses dados.
 - **Projetos** — área dos arquitetos: lista de projetos com miniatura da planta e, em cada projeto,
   visão geral editável, **editor de planta estilo CAD em milímetros** (linha de comando com `4200`,
   `@dx,dy`, `dist<ângulo` e `X,Y`; ORTO/OSNAP/GRADE; alças; cotas técnicas; geração de orçamento),
-  **elevações** de cada parede com modulação, alturas e lista de peças exportável, **arquivos** com envio real (PDF, imagens, DWG…), visualizador dentro do
+  **elevações editáveis** (arrastar montantes, travessas e portas; dividir e juntar módulos; medidas
+  digitadas), aba de **materiais** com vidros, painéis, perfis de alumínio em barras de 6 m, lista de
+  corte e acessórios, exportável para Excel, **arquivos** com envio real (PDF, imagens, DWG…), visualizador dentro do
   sistema, revisões e situação, **discussão** da equipe e histórico. Os documentos de exemplo
   (projeto executivo, memorial, proposta) são PDFs gerados a partir da planta.
 - **Verificação** — checklist técnico com divergência de medida; ao conferir tudo, libera para produção

@@ -167,7 +167,7 @@ function seed(){
   };
 }
 
-const KEY = 'eurohub-v4';
+const KEY = 'eurohub-v5';
 let DB;
 function loadDB(){
   try { DB = JSON.parse(localStorage.getItem(KEY)); } catch (e) { DB = null; }

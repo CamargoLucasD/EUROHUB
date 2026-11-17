@@ -19,6 +19,7 @@ Object.assign(PATHS, {
   trash:'<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>',
   edit:'<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
   redo:'<path d="m15 14 5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h3"/>',
+  split:'<rect x="3" y="5" width="18" height="14" rx="1"/><path d="M12 2v20"/>',
   flip:'<path d="M12 3v18"/><path d="M16 7l4 5-4 5M8 7l-4 5 4 5"/>',
 });
 
@@ -43,7 +44,7 @@ const TIPOS_PAREDE = {
 };
 const TIPOS_MODULO = { vidro:'Vidro', cego:'Painel cego', misto:'Misto (cego + vidro)' };
 const ELEV_PADRAO = { modMax:1200, travessa:1100, rodape:100, portaAlt:2100 };
-const DESC_PERFIL = 40;
+const DESC_PERFIL = 40, PERFIL = 40, BARRA = 6000;
 const SIT_ARQ = {
   elaboracao:  { nome:'Em elaboração',  cor:'gray'  },
   verificacao: { nome:'Em verificação', cor:'cyan'  },
@@ -252,98 +253,221 @@ function planSVGString(plan, o){
 }
 
 /* ============================================================
-   ELEVAÇÕES E LISTA DE PEÇAS
+   ELEVAÇÕES, PEÇAS, PERFIS E ACESSÓRIOS
+   Cada parede guarda em w.elev: altura, rodape, portaAlt, travessa, modMax,
+   cortes (posições dos montantes, em mm a partir do início) e attr (tipo e travessa por módulo,
+   indexados pela posição inicial do módulo). Sem cortes definidos, a modulação é automática.
 ============================================================ */
 function elevCfg(proj, w){ return Object.assign({}, ELEV_PADRAO, { altura: Number(proj.pedireito) || 2800 }, w.elev || {}); }
-function modulosParede(plan, w, cfg){
-  const L = wallLen(w), mods = [];
-  const portas = plan.doors.filter(d => d.wall === w.id).map(d => {
+function portasDaParede(plan, w){
+  const L = wallLen(w);
+  return plan.doors.filter(d => d.wall === w.id).map(d => {
     const dw = d.w || 800, c = d.t * L; return { a:Math.max(0, c - dw / 2), b:Math.min(L, c + dw / 2), d };
   }).sort((x, y) => x.a - y.a);
-  let x = 0;
+}
+function cortesAuto(plan, w, cfg){
+  const L = wallLen(w), cs = []; let x = 0;
   const preencher = (a, b) => {
     const span = b - a; if (span < 1) return;
     const n = Math.max(1, Math.ceil(span / cfg.modMax - 1e-9)), base = Math.floor(span / n);
-    for (let i = 0; i < n; i++) mods.push({ x:a + base * i, w:i === n - 1 ? span - base * (n - 1) : base, tipo:null });
+    for (let i = 1; i < n; i++) cs.push(Math.round(a + base * i));
   };
-  portas.forEach(p => { preencher(x, Math.max(x, p.a)); mods.push({ x:p.a, w:p.b - p.a, tipo:'porta', door:p.d.id }); x = Math.max(x, p.b); });
+  portasDaParede(plan, w).forEach(p => { preencher(x, Math.max(x, p.a)); x = Math.max(x, p.b); });
   preencher(x, L);
-  let k = 0;
-  mods.forEach(m => { if (m.tipo !== 'porta'){ m.idx = k; m.tipo = (cfg.tipos && cfg.tipos[k]) || w.tipo; k++; } });
+  return cs;
+}
+function modulosParede(plan, w, cfg){
+  const L = wallLen(w), portas = portasDaParede(plan, w), attr = cfg.attr || {};
+  const emPorta = x => portas.some(p => x > p.a - 0.5 && x < p.b + 0.5);
+  const bp = [0, L]; portas.forEach(p => bp.push(p.a, p.b));
+  (cfg.cortes || cortesAuto(plan, w, cfg)).forEach(c => { if (c > 0.5 && c < L - 0.5 && !emPorta(c)) bp.push(c); });
+  bp.sort((a, b) => a - b);
+  const mods = []; let k = 0;
+  for (let i = 0; i < bp.length - 1; i++){
+    const a = bp[i], b = bp[i + 1]; if (b - a < 1) continue;
+    const porta = portas.find(p => a >= p.a - 0.5 && b <= p.b + 0.5);
+    if (porta) mods.push({ x:a, w:b - a, tipo:'porta', door:porta.d.id });
+    else {
+      const at = attr[String(Math.round(a))] || {};
+      mods.push({ x:a, w:b - a, tipo:at.tipo || (w.tipo === 'alvenaria' ? 'cego' : w.tipo), trav:at.trav || cfg.travessa, idx:k++ });
+    }
+  }
   return mods;
 }
+/* Um limite entre dois módulos é um montante móvel quando nenhum dos lados é porta. */
+function montantesMoveis(mods){
+  const xs = [];
+  for (let i = 1; i < mods.length; i++) if (mods[i].tipo !== 'porta' && mods[i - 1].tipo !== 'porta') xs.push(mods[i].x);
+  return xs;
+}
 function pecasParede(proj, plan, w){
-  const cfg = elevCfg(proj, w), H = cfg.altura, out = [], D = DESC_PERFIL;
+  const cfg = elevCfg(proj, w), H = cfg.altura, out = [], D = PERFIL;
   const add = (peca, l, a) => { if (l > 50 && a > 50) out.push({ peca, l:Math.round(l), a:Math.round(a) }); };
   modulosParede(plan, w, cfg).forEach(m => {
     if (m.tipo === 'porta'){
-      add('Porta com ferragens', m.w - 20, cfg.portaAlt);
+      add('Porta com ferragens', m.w - 20, Math.min(cfg.portaAlt, H));
       if (H - cfg.portaAlt - D > 100) add(w.tipo === 'cego' ? 'Painel cego' : 'Vidro temperado', m.w - D, H - cfg.portaAlt - D);
     } else if (m.tipo === 'vidro') add('Vidro temperado', m.w - D, H - cfg.rodape - D);
     else if (m.tipo === 'cego') add('Painel cego', m.w - D, H - cfg.rodape - D);
-    else { add('Painel cego', m.w - D, cfg.travessa - cfg.rodape - D / 2); add('Vidro temperado', m.w - D, H - cfg.travessa - D / 2); }
+    else { add('Painel cego', m.w - D, m.trav - cfg.rodape - D / 2); add('Vidro temperado', m.w - D, H - m.trav - D / 2); }
   });
   return out;
 }
+function perfisParede(proj, plan, w){
+  const cfg = elevCfg(proj, w), L = wallLen(w), H = cfg.altura, mods = modulosParede(plan, w, cfg), out = [];
+  const add = (nome, c) => { if (c > 20) out.push({ nome, c:Math.round(c) }); };
+  add('Guia superior', L);
+  let run = 0;
+  mods.forEach((m, i) => {
+    if (m.tipo !== 'porta') run += m.w;
+    if (m.tipo === 'porta' || i === mods.length - 1){ add('Guia inferior / rodapé', run); run = 0; }
+  });
+  for (let i = 0; i <= mods.length; i++){
+    const esq = mods[i - 1], dir = mods[i];
+    add((esq && esq.tipo === 'porta') || (dir && dir.tipo === 'porta') ? 'Montante de porta (batente)' : 'Montante', H - PERFIL);
+  }
+  mods.forEach(m => {
+    if (m.tipo === 'misto') add('Travessa', m.w - PERFIL);
+    if (m.tipo === 'porta' && H - cfg.portaAlt > 100) add('Travessa de porta', m.w);
+  });
+  return out;
+}
+function agrupa(lista, chave, cria){
+  const mapa = {};
+  lista.forEach(it => { const k = chave(it); (mapa[k] || (mapa[k] = cria(it))).q++; if (it.parede) mapa[k].paredes.add(it.parede); });
+  return Object.values(mapa).map(i => Object.assign(i, { paredes:[...i.paredes].sort().join(', ') }));
+}
+function divisoriasDoProjeto(proj){ return proj.planta.walls.filter(w => w.tipo !== 'alvenaria'); }
 function pecasProjeto(proj){
-  const Ls = letras(proj.planta), mapa = {};
-  proj.planta.walls.filter(w => w.tipo !== 'alvenaria').forEach(w => pecasParede(proj, proj.planta, w).forEach(p => {
-    const k = `${p.peca}|${p.l}|${p.a}`;
-    const it = mapa[k] || (mapa[k] = { peca:p.peca, l:p.l, a:p.a, q:0, paredes:new Set() });
-    it.q++; it.paredes.add(Ls[w.id]);
-  }));
-  return Object.values(mapa).sort((a, b) => a.peca.localeCompare(b.peca) || b.a - a.a || b.l - a.l)
-    .map(i => Object.assign(i, { paredes:[...i.paredes].sort().join(', ') }));
+  const Ls = letras(proj.planta), todas = [];
+  divisoriasDoProjeto(proj).forEach(w => pecasParede(proj, proj.planta, w).forEach(p => todas.push(Object.assign(p, { parede:Ls[w.id] }))));
+  return agrupa(todas, p => `${p.peca}|${p.l}|${p.a}`, p => ({ peca:p.peca, l:p.l, a:p.a, q:0, paredes:new Set() }))
+    .sort((a, b) => a.peca.localeCompare(b.peca) || b.a - a.a || b.l - a.l);
+}
+function barrasNecessarias(comprimentos){
+  const pecas = [];
+  comprimentos.forEach(c => { while (c > BARRA){ pecas.push(BARRA); c -= BARRA; } if (c > 0) pecas.push(c); });
+  pecas.sort((a, b) => b - a);
+  const sobras = [];
+  pecas.forEach(c => { const i = sobras.findIndex(s => s >= c); if (i >= 0) sobras[i] -= c; else sobras.push(BARRA - c); });
+  return { barras:sobras.length, sobra:sobras.reduce((s, v) => s + v, 0) };
+}
+function perfisProjeto(proj){
+  const Ls = letras(proj.planta), todos = [];
+  divisoriasDoProjeto(proj).forEach(w => perfisParede(proj, proj.planta, w).forEach(p => todos.push(Object.assign(p, { parede:Ls[w.id] }))));
+  const corte = agrupa(todos, p => `${p.nome}|${p.c}`, p => ({ nome:p.nome, c:p.c, q:0, paredes:new Set() }))
+    .sort((a, b) => a.nome.localeCompare(b.nome) || b.c - a.c);
+  const nomes = [...new Set(todos.map(p => p.nome))].sort();
+  const resumo = nomes.map(nome => {
+    const cs = todos.filter(p => p.nome === nome).map(p => p.c), total = cs.reduce((s, v) => s + v, 0);
+    return Object.assign({ nome, pecas:cs.length, total }, barrasNecessarias(cs));
+  });
+  return { corte, resumo };
+}
+function acessoriosProjeto(proj){
+  const plan = proj.planta; let portas = 0, baguete = 0, gaxeta = 0, guias = 0, montantes = 0, travessas = 0;
+  divisoriasDoProjeto(proj).forEach(w => {
+    pecasParede(proj, plan, w).forEach(p => {
+      if (p.peca === 'Vidro temperado'){ baguete += 2 * (p.l + p.a); gaxeta += 2 * (p.l + p.a); }
+      if (p.peca === 'Porta com ferragens'){ portas++; gaxeta += p.l + 2 * p.a; }
+    });
+    perfisParede(proj, plan, w).forEach(p => {
+      if (p.nome.startsWith('Guia')) guias += p.c;
+      if (p.nome.startsWith('Montante')) montantes++;
+      if (p.nome.startsWith('Travessa')) travessas++;
+    });
+  });
+  return [
+    { item:'Kit de porta (fechadura, 3 dobradiças e batente)', q:portas, un:'kit' },
+    { item:'Baguete de fixação do vidro', q:Math.round(baguete), un:'mm', obs:`${Math.ceil(baguete / BARRA)} barras de 6 m` },
+    { item:'Gaxeta de vedação', q:Math.round(gaxeta), un:'mm', obs:`${fmt(gaxeta / 1000, 1)} m` },
+    { item:'Fixação das guias (bucha e parafuso a cada 500 mm)', q:Math.ceil(guias / 500), un:'un' },
+    { item:'Sapata niveladora de montante', q:montantes, un:'un' },
+    { item:'Cantoneira de união da travessa', q:travessas * 2, un:'un' },
+  ].filter(a => a.q > 0);
 }
 
-function elevSVG(proj, plan, w, o){
+/* Desenho da elevação. Coordenadas: x ao longo da parede, y = 0 no forro e y = H no piso. */
+function elevMarkup(proj, plan, w, o){
   o = o || {};
-  const cfg = elevCfg(proj, w), L = wallLen(w), H = cfg.altura, mods = modulosParede(plan, w, cfg);
-  const fs = o.fs || Math.max(L, H * 1.6) / 42, Y = z => H - z, nav = '#132a63', sw = r1(fs * 0.09);
+  const cfg = elevCfg(proj, w), L = wallLen(w), H = cfg.altura, mods = modulosParede(plan, w, cfg), P = PERFIL;
+  const fs = o.fs, nav = '#132a63', PF = '#3a4a80', sw = r1(fs * 0.07), sel = o.sel || null;
   const VID = '#dff3fa', CEG = '#d3d9e4', ROD = '#9aa6bd';
-  const rect = (x, y, w2, h, fill, extra) => `<rect x="${r1(x)}" y="${r1(y)}" width="${r1(w2)}" height="${r1(h)}" fill="${fill}" stroke="${nav}" stroke-width="${sw}" ${extra || ''}/>`;
-  const vidro = (x, z1, z2, wd) => {
-    let r = rect(x, Y(z2), wd, z2 - z1, VID);
-    const gx = x + wd * 0.25, gz = z1 + (z2 - z1) * 0.55;
-    r += `<line x1="${r1(gx)}" y1="${r1(Y(gz))}" x2="${r1(gx + wd * 0.18)}" y2="${r1(Y(gz + wd * 0.18))}" stroke="#8fd3e8" stroke-width="${r1(fs * 0.12)}"/>`
-       + `<line x1="${r1(gx + wd * 0.1)}" y1="${r1(Y(gz))}" x2="${r1(gx + wd * 0.22)}" y2="${r1(Y(gz + wd * 0.12))}" stroke="#8fd3e8" stroke-width="${r1(fs * 0.08)}"/>`;
-    return r;
+  const box = (x, y, w2, h, fill, st) => h > 0 && w2 > 0 ? `<rect x="${r1(x)}" y="${r1(y)}" width="${r1(w2)}" height="${r1(h)}" fill="${fill}"${st ? ` stroke="${st}" stroke-width="${sw}"` : ''}/>` : '';
+  const vidro = (x, y, w2, h) => {
+    const gx = x + w2 * 0.25, gy = y + h * 0.45, t = Math.min(w2, h) * 0.18;
+    return box(x, y, w2, h, VID)
+      + `<line x1="${r1(gx)}" y1="${r1(gy)}" x2="${r1(gx + t)}" y2="${r1(gy - t)}" stroke="#8fd3e8" stroke-width="${r1(fs * 0.12)}"/>`
+      + `<line x1="${r1(gx + t * 0.6)}" y1="${r1(gy)}" x2="${r1(gx + t * 1.3)}" y2="${r1(gy - t * 0.7)}" stroke="#8fd3e8" stroke-width="${r1(fs * 0.08)}"/>`;
   };
-  let s = `<rect x="${-fs * 9}" y="${-fs * 9}" width="${L + fs * 14}" height="${H + fs * 13}" fill="#fff"/>`;
-  s += `<line x1="${-fs * 2}" y1="${-0}" x2="${L + fs * 2}" y2="0" stroke="#8a93a3" stroke-width="${sw}" stroke-dasharray="${r1(fs * 0.8)} ${r1(fs * 0.5)}"/>`
-    + `<text x="${r1(L + fs * 2.2)}" y="${r1(fs * 0.35)}" font-size="${r1(fs * 0.75)}" fill="#8a93a3">forro</text>`;
+  let s = `<line x1="${r1(-fs * 2)}" y1="0" x2="${r1(L + fs * 2)}" y2="0" stroke="#8a93a3" stroke-width="${sw}" stroke-dasharray="${r1(fs * 0.8)} ${r1(fs * 0.5)}"/>`;
   mods.forEach(m => {
-    let g = '';
     if (m.tipo === 'porta'){
       const top = Math.min(cfg.portaAlt, H);
-      if (H - top > 1) g += w.tipo === 'cego' ? rect(m.x, 0, m.w, H - top, CEG) : vidro(m.x, top, H, m.w);
-      g += rect(m.x + 15, Y(top), m.w - 30, top, '#eef1f6');
-      g += `<circle cx="${r1(m.x + m.w - fs * 1.2)}" cy="${r1(Y(1050))}" r="${r1(fs * 0.3)}" fill="${nav}"/>`
-         + `<line x1="${r1(m.x + 15)}" y1="${r1(Y(top))}" x2="${r1(m.x + m.w - 15)}" y2="${r1(H)}" stroke="#b7c0cf" stroke-width="${sw}" stroke-dasharray="${r1(fs * 0.5)} ${r1(fs * 0.4)}"/>`;
+      if (H - top > 1) s += w.tipo === 'cego' ? box(m.x, 0, m.w, H - top, CEG) : vidro(m.x, 0, m.w, H - top);
+      s += box(m.x + P / 2, H - top, m.w - P, top, '#eef1f6', nav)
+        + `<circle cx="${r1(m.x + m.w - P / 2 - fs * 0.9)}" cy="${r1(H - 1050)}" r="${r1(fs * 0.28)}" fill="${nav}"/>`
+        + `<line x1="${r1(m.x + P / 2)}" y1="${r1(H - top)}" x2="${r1(m.x + m.w - P / 2)}" y2="${H}" stroke="#b7c0cf" stroke-width="${sw}" stroke-dasharray="${r1(fs * 0.5)} ${r1(fs * 0.4)}"/>`;
     } else {
-      g += rect(m.x, Y(cfg.rodape), m.w, cfg.rodape, ROD);
-      if (m.tipo === 'vidro') g += vidro(m.x, cfg.rodape, H, m.w);
-      else if (m.tipo === 'cego') g += rect(m.x, 0, m.w, H - cfg.rodape, CEG);
-      else { g += rect(m.x, Y(cfg.travessa), m.w, cfg.travessa - cfg.rodape, CEG) + vidro(m.x, cfg.travessa, H, m.w)
-               + `<line x1="${r1(m.x)}" y1="${r1(Y(cfg.travessa))}" x2="${r1(m.x + m.w)}" y2="${r1(Y(cfg.travessa))}" stroke="${nav}" stroke-width="${r1(fs * 0.22)}"/>`; }
+      if (m.tipo === 'vidro') s += vidro(m.x, 0, m.w, H - cfg.rodape);
+      else if (m.tipo === 'cego') s += box(m.x, 0, m.w, H - cfg.rodape, CEG);
+      else s += vidro(m.x, 0, m.w, H - m.trav) + box(m.x, H - m.trav, m.w, m.trav - cfg.rodape, CEG);
+      s += box(m.x, H - cfg.rodape, m.w, cfg.rodape, ROD);
     }
-    if (o.interativo && m.tipo !== 'porta')
-      s += `<g data-mod="${m.idx}">${g}<rect class="mod-hit" x="${r1(m.x)}" y="0" width="${r1(m.w)}" height="${H}" fill="transparent"/></g>`;
-    else s += g;
   });
-  s += `<line x1="${-fs * 2.5}" y1="${H}" x2="${L + fs * 2.5}" y2="${H}" stroke="#56616f" stroke-width="${r1(fs * 0.22)}"/>`;
+  /* perfis */
+  s += box(0, 0, L, P, PF);
+  mods.forEach(m => {
+    if (m.tipo === 'misto') s += box(m.x, H - m.trav - P / 2, m.w, P, sel && sel.kind === 'mod' && sel.x === Math.round(m.x) ? '#0b8fb3' : PF);
+    if (m.tipo === 'porta' && H - cfg.portaAlt > 1) s += box(m.x, H - cfg.portaAlt - P / 2, m.w, P, PF);
+  });
+  for (let i = 0; i <= mods.length; i++){
+    const x = i === mods.length ? L : mods[i].x;
+    const on = sel && sel.kind === 'cut' && Math.abs(sel.x - x) < 0.6;
+    s += box(i === 0 ? 0 : i === mods.length ? L - P : x - P / 2, 0, P, H, on ? '#0b8fb3' : PF);
+  }
+  s += `<rect x="0" y="0" width="${r1(L)}" height="${r1(H)}" fill="none" stroke="${nav}" stroke-width="${sw}"/>`;
+  /* piso */
+  s += `<line x1="${r1(-fs * 2.5)}" y1="${H}" x2="${r1(L + fs * 2.5)}" y2="${H}" stroke="#56616f" stroke-width="${r1(fs * 0.22)}"/>`;
   for (let x = -fs * 2.5; x < L + fs * 2.5; x += fs * 1.1)
     s += `<line x1="${r1(x)}" y1="${r1(H + fs * 0.1)}" x2="${r1(x - fs * 0.7)}" y2="${r1(H + fs * 0.8)}" stroke="#9aa3b2" stroke-width="${r1(sw * 0.8)}"/>`;
+  /* seleção */
+  if (sel && (sel.kind === 'mod' || sel.kind === 'door')){
+    const m = mods.find(x => sel.kind === 'door' ? x.door === sel.id : x.tipo !== 'porta' && Math.round(x.x) === sel.x);
+    if (m) s += `<rect x="${r1(m.x)}" y="0" width="${r1(m.w)}" height="${H}" fill="#53d4f0" fill-opacity=".2" stroke="#0b8fb3" stroke-width="${r1(fs * 0.14)}"/>`;
+  }
+  /* cotas */
   const C = (x1, y1, x2, y2, off, v) => cotaSVG(x1, y1, x2, y2, off, cotaTxt(v), fs, '#14337a', '#fff');
   mods.forEach(m => { s += C(m.x, 0, m.x + m.w, 0, fs * 1.6, m.w); });
   s += C(0, 0, L, 0, fs * 3.6, L);
-  const zs = [0, cfg.rodape]; if (mods.some(m => m.tipo === 'misto')) zs.push(cfg.travessa); zs.push(H);
-  for (let i = 0; i < zs.length - 1; i++) s += C(0, Y(zs[i]), 0, Y(zs[i + 1]), fs * 1.7, zs[i + 1] - zs[i]);
-  s += C(0, Y(0), 0, Y(H), fs * 3.7, H);
+  const ref = mods.find(m => sel && sel.kind === 'mod' && m.tipo === 'misto' && Math.round(m.x) === sel.x) || mods.find(m => m.tipo === 'misto');
+  const zs = [0, cfg.rodape]; if (ref) zs.push(ref.trav); zs.push(H);
+  for (let i = 0; i < zs.length - 1; i++) if (zs[i + 1] - zs[i] > 0) s += C(0, H - zs[i], 0, H - zs[i + 1], fs * 1.7, zs[i + 1] - zs[i]);
+  s += C(0, H, 0, 0, fs * 3.7, H);
   const porta = mods.find(m => m.tipo === 'porta');
-  if (porta) s += C(porta.x + porta.w, Y(0), porta.x + porta.w, Y(Math.min(cfg.portaAlt, H)), -fs * 1.3, Math.min(cfg.portaAlt, H));
-  const vb = `${r1(-fs * 6.5)} ${r1(-fs * 5.5)} ${r1(L + fs * 10)} ${r1(H + fs * 7.5)}`;
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb}" preserveAspectRatio="xMidYMid meet" font-family="Roboto, Arial, sans-serif">${s}</svg>`;
+  if (porta) s += C(porta.x + porta.w, H, porta.x + porta.w, H - Math.min(cfg.portaAlt, H), -fs * 1.3, Math.min(cfg.portaAlt, H));
+  /* alças */
+  if (sel && o.alcas){
+    const g = fs * 0.42, alca = (x, y) => `<rect x="${r1(x - g)}" y="${r1(y - g)}" width="${r1(g * 2)}" height="${r1(g * 2)}" fill="#1f8fd6" stroke="#fff" stroke-width="${r1(fs * 0.08)}"/>`;
+    const moveis = montantesMoveis(mods);
+    if (sel.kind === 'cut') s += alca(sel.x, H / 2);
+    if (sel.kind === 'mod'){
+      const m = mods.find(x => x.tipo !== 'porta' && Math.round(x.x) === sel.x);
+      if (m){
+        if (moveis.some(x => Math.abs(x - m.x) < 0.6)) s += alca(m.x, H / 2);
+        if (moveis.some(x => Math.abs(x - (m.x + m.w)) < 0.6)) s += alca(m.x + m.w, H / 2);
+        if (m.tipo === 'misto') s += alca(m.x + m.w / 2, H - m.trav);
+      }
+    }
+    if (sel.kind === 'door'){ const m = mods.find(x => x.door === sel.id); if (m) s += alca(m.x + m.w / 2, H - Math.min(cfg.portaAlt, H) / 2); }
+  }
+  return s;
+}
+function elevSVG(proj, plan, w){
+  const cfg = elevCfg(proj, w), L = wallLen(w), H = cfg.altura, fs = Math.max(L, H * 1.6) / 42;
+  const vb = [-fs * 6.5, -fs * 5.5, L + fs * 10, H + fs * 7.5].map(r1);
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb.join(' ')}" preserveAspectRatio="xMidYMid meet" font-family="Roboto, Arial, sans-serif">`
+    + `<rect x="${vb[0]}" y="${vb[1]}" width="${vb[2]}" height="${vb[3]}" fill="#fff"/>${elevMarkup(proj, plan, w, { fs })}</svg>`;
 }
 
 /* ============================================================
@@ -436,7 +560,7 @@ function pdfCarimbo(pg, proj, ver, W, titulo, folha){
 function pdfExecutivo(proj, ver){
   const plan = ver.snap || proj.planta, W = 842, H = 595, paginas = [];
   const Ls = letras(plan), divs = plan.walls.filter(w => w.tipo !== 'alvenaria');
-  const nElev = Math.max(1, Math.ceil(divs.length / 4)), total = 2 + nElev;
+  const nElev = Math.max(1, Math.ceil(divs.length / 4)), total = 3 + nElev;
 
   /* Folha 1 — planta */
   let pg = PDFPagina();
@@ -513,7 +637,43 @@ function pdfExecutivo(proj, ver){
     pg.stroke('#e2e6ee'); pg.line(36, y - 5, 556, y - 5, 0.5); y -= 16;
   });
   if (pecas.length > 26){ pg.fill('#8f6312'); pg.text(40, y, `+ ${pecas.length - 26} itens — lista completa na aba Elevações do EuroHub`, 8.5); }
-  pdfCarimbo(pg, proj, ver, W, 'Lista de peças', `${total}/${total}`);
+  pdfCarimbo(pg, proj, ver, W, 'Lista de peças', `${total - 1}/${total}`);
+  paginas.push(pg.out());
+
+  /* Perfis e acessórios */
+  const pj2 = Object.assign({}, proj, { planta:plan }), pf = perfisProjeto(pj2), ac = acessoriosProjeto(pj2);
+  pg = PDFPagina();
+  pg.stroke('#13214e'); pg.rect(20, 20, W - 40, H - 40, 1.2);
+  pg.fill('#13214e'); pg.text(36, H - 48, 'PERFIS E ACESSÓRIOS', 14, true);
+  pg.fill('#56616f'); pg.text(36, H - 64, 'Perfis de alumínio em barras de 6 m, lista de corte e ferragens. Medidas em mm.', 9.5);
+  const tabela = (x0, y0, larg, colunas, cabecalho, linhas, max) => {
+    let yy = y0;
+    pg.fill('#eef1f6'); pg.fillRect(x0 - 4, yy - 5, larg, 17);
+    pg.fill('#13214e'); cabecalho.forEach((c, i) => pg.text(colunas[i], yy, c, 8.5, true)); yy -= 16;
+    linhas.slice(0, max).forEach(l => {
+      pg.fill('#1f2b44'); l.forEach((v, i) => pg.text(colunas[i], yy, String(v), 8.5));
+      pg.stroke('#e2e6ee'); pg.line(x0 - 4, yy - 4.5, x0 - 4 + larg, yy - 4.5, 0.5); yy -= 14;
+    });
+    if (linhas.length > max){ pg.fill('#8f6312'); pg.text(x0, yy, `+ ${linhas.length - max} itens na aba Materiais do EuroHub`, 8); yy -= 14; }
+    return yy;
+  };
+  pg.fill('#13214e'); pg.text(40, H - 92, 'RESUMO POR PERFIL', 8.5, true);
+  let yp = tabela(40, H - 110, 400, [40, 215, 262, 325, 380], ['Perfil', 'Peças', 'Total', 'Barras', 'Sobra'],
+    pf.resumo.map(r => [r.nome, r.pecas, fmm(r.total), r.barras, fmm(r.sobra)]), 8);
+  pg.fill('#13214e'); pg.text(40, yp - 8, 'LISTA DE CORTE', 8.5, true);
+  tabela(40, yp - 26, 400, [40, 215, 300, 350], ['Perfil', 'Comprimento', 'Qtd.', 'Paredes'],
+    pf.corte.map(c => [c.nome, c.c, c.q, c.paredes]), Math.max(4, Math.floor((yp - 26 - 50) / 14) - 1));
+  pg.fill('#13214e'); pg.text(470, H - 92, 'FERRAGENS E ACESSÓRIOS', 8.5, true);
+  let ya = H - 110;
+  ac.forEach(a => {
+    const ls = quebrar(a.item, 46);
+    pg.fill('#1f2b44'); ls.forEach((l, i) => pg.text(470, ya - i * 11, l, 8.5));
+    pg.text(720, ya, `${a.un === 'mm' ? fmm(a.q) : a.q} ${a.un}`, 8.5, true);
+    ya -= ls.length * 11 + 2;
+    if (a.obs){ pg.fill('#56616f'); pg.text(470, ya, a.obs, 7.5); ya -= 11; }
+    pg.stroke('#e2e6ee'); pg.line(466, ya + 4, 800, ya + 4, 0.5); ya -= 8;
+  });
+  pdfCarimbo(pg, proj, ver, W, 'Perfis e acessórios', `${total}/${total}`);
   paginas.push(pg.out());
   return pdfBlob(paginas, W, H);
 }
@@ -534,7 +694,7 @@ function pdfElevacao(pg, proj, plan, w, letra, box){
       R(m.x, H - cfg.rodape, m.w, cfg.rodape, '#9aa6bd');
       if (m.tipo === 'vidro') R(m.x, 0, m.w, H - cfg.rodape, '#dff3fa');
       else if (m.tipo === 'cego') R(m.x, 0, m.w, H - cfg.rodape, '#d3d9e4');
-      else { R(m.x, H - cfg.travessa, m.w, cfg.travessa - cfg.rodape, '#d3d9e4'); R(m.x, 0, m.w, H - cfg.travessa, '#dff3fa'); }
+      else { R(m.x, H - m.trav, m.w, m.trav - cfg.rodape, '#d3d9e4'); R(m.x, 0, m.w, H - m.trav, '#dff3fa'); }
     }
   });
   pg.stroke('#56616f'); pg.line(M.X(0) - 6, M.Y(H), M.X(L) + 6, M.Y(H), 1.2);
@@ -856,6 +1016,7 @@ function viewProjeto(proj, aba){
   const nDiv = proj.planta.walls.filter(w => w.tipo !== 'alvenaria').length;
   const abas = [
     ['geral', 'Visão geral', 'painel', ''], ['planta', 'Planta', 'plan', ''], ['elevacoes', 'Elevações', 'elev', nDiv],
+    ['materiais', 'Materiais', 'pedidos', ''],
     ['arquivos', 'Arquivos', 'file', proj.arquivos.length], ['discussao', 'Discussão', 'comment', proj.comentarios.length],
     ['historico', 'Histórico', 'history', ''],
   ];
@@ -863,7 +1024,7 @@ function viewProjeto(proj, aba){
     <nav class="tabs" aria-label="Seções do projeto">${abas.map(([id, nome, ic, c]) =>
       `<a class="tab ${aba === id ? 'active' : ''}" href="#/projetos/${esc(proj.id)}/${id}" style="text-decoration:none">${ico(ic)}${nome}${c !== '' ? `<span class="c">${c}</span>` : ''}</a>`).join('')}</nav>
     <div id="pj-aba"></div>`;
-  ({ geral:abaGeral, planta:abaPlanta, elevacoes:abaElevacoes, arquivos:abaArquivos, discussao:abaDiscussao, historico:abaHistorico }[aba] || abaGeral)(proj, t);
+  ({ geral:abaGeral, planta:abaPlanta, elevacoes:abaElevacoes, materiais:abaMateriais, arquivos:abaArquivos, discussao:abaDiscussao, historico:abaHistorico }[aba] || abaGeral)(proj, t);
 }
 
 function abaGeral(proj, t){
@@ -944,103 +1105,600 @@ function abaHistorico(proj){
 }
 
 /* ============================================================
-   ELEVAÇÕES
+   ELEVAÇÕES — editor
 ============================================================ */
 const elevSel = {};
+let EL = null;
+const EL_PROMPTS = {
+  select:'Comando:',
+  split:'DIVIDIR  Clique na posição do montante ou digite a distância do início (mm):',
+  erase:'APAGAR  Clique no montante:',
+};
+const EL_CMDS = {
+  S:'select', SEL:'select', D:'split', DIV:'split', DIVIDIR:'split', E:'erase', APAGAR:'erase',
+  U:'undo', DESFAZER:'undo', R:'redo', REFAZER:'redo', Z:'fit', ZOOM:'fit', AUTO:'auto',
+};
+const MIN_MOD = 100;
+
 function abaElevacoes(proj){
-  const plan = proj.planta, Ls = letras(plan), divs = plan.walls.filter(w => w.tipo !== 'alvenaria');
+  const plan = proj.planta, Ls = letras(plan), divs = divisoriasDoProjeto(proj);
   if (!divs.length){
+    EL = null;
     $('#pj-aba').innerHTML = `<div class="card empty">${ico('elev')}<div>Nenhuma divisória na planta ainda.<br><a href="#/projetos/${esc(proj.id)}/planta">Desenhe as divisórias na planta</a> para ver as elevações.</div></div>`;
     return;
   }
   const w = divs.find(x => x.id === elevSel[proj.id]) || divs[0]; elevSel[proj.id] = w.id;
-  const cfg = elevCfg(proj, w), mods = modulosParede(plan, w, cfg), pecas = pecasParede(proj, plan, w), todas = pecasProjeto(proj);
-  const temMisto = mods.some(m => m.tipo === 'misto'), i = divs.indexOf(w);
-  const campo = (id, rot, val, dica) => `<div><label for="${id}">${rot}</label><div class="input-suffix"><input id="${id}" value="${val}" inputmode="numeric"${dica ? ` title="${dica}"` : ''}><em>mm</em></div></div>`;
+  const i = divs.indexOf(w);
   $('#pj-aba').innerHTML = `
     <div class="elev-layout">
       <div class="card card-pad">
         <div class="sub-title" style="margin-top:0">Divisórias</div>
-        <div class="wall-list">${divs.map(d => { const c = elevCfg(proj, d); return `
-          <button class="wall-item ${d.id === w.id ? 'active' : ''}" data-w="${d.id}">
-            <span class="wall-tag">${Ls[d.id]}</span>
-            <span><b>${cotaTxt(wallLen(d))} mm</b><small>${TIPOS_PAREDE[d.tipo].nome} · ${modulosParede(plan, d, c).length} módulos</small></span>
-          </button>`; }).join('')}</div>
+        <div class="wall-list" id="el-lista"></div>
       </div>
       <div class="card" style="overflow:hidden">
         <div class="elev-head">
           <span class="wall-tag">${Ls[w.id]}</span>
-          <h3>Elevação ${Ls[w.id]} · ${cotaTxt(wallLen(w))} × ${cotaTxt(cfg.altura)} mm<small style="display:block;font-weight:400;font-size:12.5px">${TIPOS_PAREDE[w.tipo].nome} · ${mods.length} módulos</small></h3>
-          <button class="btn btn-outline btn-sm" id="el-prev" ${i === 0 ? 'disabled' : ''}>‹ Anterior</button>
-          <button class="btn btn-outline btn-sm" id="el-next" ${i === divs.length - 1 ? 'disabled' : ''}>Próxima ›</button>
+          <h3 id="el-titulo"></h3>
+          <button class="btn btn-outline btn-sm" id="el-prev" title="Parede anterior" aria-label="Parede anterior" ${i === 0 ? 'disabled' : ''}>‹</button>
+          <button class="btn btn-outline btn-sm" id="el-next" title="Próxima parede" aria-label="Próxima parede" ${i === divs.length - 1 ? 'disabled' : ''}>›</button>
           <a class="btn btn-outline btn-sm" href="#/projetos/${esc(proj.id)}/planta" id="el-planta" style="text-decoration:none">${ico('plan')}Ver na planta</a>
         </div>
-        <div class="elev-stage" id="el-stage">${elevSVG(proj, plan, w, { interativo:true })}</div>
-        <div class="elev-legend">
-          <span><i style="background:#dff3fa"></i>Vidro</span><span><i style="background:#d3d9e4"></i>Painel cego</span>
-          <span><i style="background:#9aa6bd"></i>Rodapé</span><span><i style="background:#eef1f6"></i>Porta</span>
-          <span style="margin-left:auto">Clique num módulo para trocar entre vidro, painel cego e misto</span>
+        <div class="plan-tools">
+          <button class="tool" data-eltool="select" title="Selecionar e arrastar (comando S)">${ico('pointer')}<span class="lbl">Selecionar</span></button>
+          <button class="tool" data-eltool="split" title="Dividir um módulo com um novo montante (comando D)">${ico('split')}<span class="lbl">Dividir</span></button>
+          <button class="tool" data-eltool="erase" title="Apagar um montante e juntar os módulos (comando E)">${ico('eraser')}<span class="lbl">Apagar</span></button>
+          <span class="tool-sep"></span>
+          <button class="tool" id="el-undo" title="Desfazer (Ctrl+Z)" aria-label="Desfazer">${ico('undo')}</button>
+          <button class="tool" id="el-redo" title="Refazer (Ctrl+Y)" aria-label="Refazer">${ico('redo')}</button>
+          <span class="tool-sep"></span>
+          <button class="tool" id="el-auto" title="Refazer a modulação automática">${ico('refresh')}<span class="lbl">Remodular</span></button>
+        </div>
+        <div class="plan-canvas cad-cursor" id="el-canvas" style="height:440px">
+          <svg id="el-svg" font-family="Roboto, Arial, sans-serif" preserveAspectRatio="xMidYMid meet">
+            <rect x="-200000" y="-200000" width="400000" height="400000" fill="#fff"/>
+            <g id="el-layer"></g><g id="el-preview"></g>
+          </svg>
+          <div class="plan-zoom">
+            <button id="el-zin" aria-label="Aproximar">+</button>
+            <button id="el-zout" aria-label="Afastar">−</button>
+            <button id="el-fit" aria-label="Ajustar à tela">${ico('fit')}</button>
+          </div>
+        </div>
+        <div class="cad-status">
+          <span class="cad-coord" id="el-coord" style="min-width:150px">X —   Z —</span>
+          <span class="sp"></span>
+          <span class="elev-key"><i style="background:#dff3fa"></i>Vidro</span><span class="elev-key"><i style="background:#d3d9e4"></i>Cego</span>
+          <span class="elev-key"><i style="background:#3a4a80"></i>Perfil</span><span class="elev-key" style="margin-right:8px"><i style="background:#9aa6bd"></i>Rodapé</span>
+          <button class="cad-chip" id="el-grade" title="Arredonda para 10 mm">GRADE <kbd>F9</kbd></button>
+          <span class="cad-unit">mm</span>
+        </div>
+        <div class="cad-cmd">
+          <div class="cad-hist" id="el-hist"></div>
+          <div class="cad-line"><span id="el-prompt"></span><input id="el-cmd" autocomplete="off" spellcheck="false" aria-label="Linha de comando"></div>
         </div>
       </div>
       <div>
+        <div class="card card-pad" id="el-props"></div>
+        <div class="card card-pad section-gap" id="el-mat"></div>
+      </div>
+    </div>`;
+
+  EL = { proj, plan, w, tool:'select', sel:null, hover:null, vb:null, undo:[], redo:[], down:null, panning:false, drag:null,
+         grade:true, histOk:false, ultimaEntrada:'',
+         hist:['Arraste montantes, travessas e portas · D divide um módulo · E apaga um montante · digite a medida e Enter'] };
+  const svg = $('#el-svg'), canvas = $('#el-canvas'), cmd = $('#el-cmd');
+  const ir = id => { elevSel[proj.id] = id; abaElevacoes(proj); };
+  $('#el-prev').addEventListener('click', () => ir(divs[i - 1].id));
+  $('#el-next').addEventListener('click', () => ir(divs[i + 1].id));
+  $('#el-planta').addEventListener('click', () => { edFoco[proj.id] = w.id; });
+  $$('[data-eltool]').forEach(b => b.addEventListener('click', () => elTool(b.dataset.eltool)));
+  $('#el-undo').addEventListener('click', elUndo);
+  $('#el-redo').addEventListener('click', elRedo);
+  $('#el-auto').addEventListener('click', elRemodular);
+  $('#el-zin').addEventListener('click', () => elZoom(1 / 1.25));
+  $('#el-zout').addEventListener('click', () => elZoom(1.25));
+  $('#el-fit').addEventListener('click', () => { elFit(); elRender(); });
+  $('#el-grade').addEventListener('click', elGrade);
+  cmd.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); const v = cmd.value; cmd.value = ''; elComando(v); }
+    else if (e.key === 'Escape'){ e.preventDefault(); cmd.value = ''; elEsc(); cmd.blur(); }
+    else if (e.key === 'ArrowUp'){ e.preventDefault(); cmd.value = EL.ultimaEntrada; }
+    else if (e.key === 'F9'){ e.preventDefault(); elGrade(); }
+  });
+
+  svg.addEventListener('pointerdown', e => {
+    if (e.button === 1) e.preventDefault();
+    if (e.button !== 0 && e.button !== 1) return;
+    const p = elPt(e), hit = e.button === 0 && EL.tool === 'select' ? elHit(p) : null;
+    EL.down = { sx:e.clientX, sy:e.clientY, vb:Object.assign({}, EL.vb), moved:false };
+    if (hit && hit.kind !== 'mod') EL.drag = elIniciaArrasto(hit, p);
+    else if (e.button === 1 || (EL.tool === 'select' && !hit)){ EL.panning = true; canvas.classList.add('panning'); }
+    try { svg.setPointerCapture(e.pointerId); } catch (err) {}
+  });
+  svg.addEventListener('pointermove', e => {
+    const p = elPt(e);
+    if (EL.down){
+      const dx = e.clientX - EL.down.sx, dy = e.clientY - EL.down.sy;
+      if (Math.hypot(dx, dy) > 3) EL.down.moved = true;
+      if (EL.panning){ const s = elEscala(); EL.vb.x = EL.down.vb.x - dx * s; EL.vb.y = EL.down.vb.y - dy * s; elAplicaVB(); return; }
+      if (EL.drag && EL.down.moved){ elArrasta(p); EL.hover = p; elPreview(); return; }
+    }
+    EL.hover = p; elPreview();
+  });
+  svg.addEventListener('pointerup', e => {
+    const d = EL.down; EL.down = null;
+    if (EL.drag){
+      const dr = EL.drag; EL.drag = null;
+      if (d && d.moved){
+        if (dr.kind === 'door') elLimpaCortesNasPortas();
+        EL.undo.push(dr.snap); EL.redo = []; elSalvar(); elLog(dr.msg());
+        return;
+      }
+    }
+    if (EL.panning){ EL.panning = false; canvas.classList.remove('panning'); if (d && d.moved) return; }
+    if (d && !d.moved && e.button === 0) elClick(elPt(e));
+  });
+  svg.addEventListener('pointerleave', () => { EL.hover = null; elPreview(); });
+  svg.addEventListener('contextmenu', e => { e.preventDefault(); elEsc(); });
+  svg.addEventListener('wheel', e => { e.preventDefault(); elZoom(e.deltaY > 0 ? 1.15 : 1 / 1.15, elPt(e)); }, { passive:false });
+
+  elFit(); elTool('select', true); elLogRender(); elAtualiza();
+}
+
+/* ---------- Estado e vista ---------- */
+const elCfg = () => elevCfg(EL.proj, EL.w);
+const elMods = () => modulosParede(EL.plan, EL.w, elCfg());
+function elPt(e){
+  const svg = $('#el-svg'); const pt = svg.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY;
+  const r = pt.matrixTransform(svg.getScreenCTM().inverse()); return { x:r.x, y:r.y };
+}
+function elEscala(){ const c = $('#el-canvas'); return Math.max(EL.vb.w / Math.max(c.clientWidth, 1), EL.vb.h / Math.max(c.clientHeight, 1)); }
+function elAplicaVB(){ $('#el-svg').setAttribute('viewBox', `${r1(EL.vb.x)} ${r1(EL.vb.y)} ${r1(EL.vb.w)} ${r1(EL.vb.h)}`); }
+function elFit(){
+  const L = wallLen(EL.w), H = elCfg().altura, m = Math.max(L, H * 1.6) / 42;
+  EL.vb = { x:-m * 7, y:-m * 6.5, w:L + m * 11, h:H + m * 9 }; elAplicaVB();
+}
+function elZoom(f, p){
+  const nw = EL.vb.w * f; if (nw < 300 || nw > 200000) return;
+  p = p || { x:EL.vb.x + EL.vb.w / 2, y:EL.vb.y + EL.vb.h / 2 };
+  EL.vb = { x:p.x - (p.x - EL.vb.x) * f, y:p.y - (p.y - EL.vb.y) * f, w:nw, h:EL.vb.h * f };
+  elAplicaVB(); elRender(); elPreview();
+}
+function elGrade(){ EL.grade = !EL.grade; $('#el-grade').classList.toggle('on', EL.grade); elLog(`GRADE ${EL.grade ? 'ligado (10 mm)' : 'desligado (1 mm)'}`); }
+const elArred = v => { const st = EL.grade ? 10 : 1; return Math.round(v / st) * st; };
+function elTool(t, silencioso){
+  EL.tool = t; if (t !== 'select') EL.sel = null;
+  $$('[data-eltool]').forEach(b => b.classList.toggle('active', b.dataset.eltool === t));
+  $('#el-grade').classList.toggle('on', EL.grade);
+  if (!silencioso && t !== 'select') elLog({ split:'DIVIDIR', erase:'APAGAR' }[t]);
+  elRender(); elPreview(); elPainel();
+}
+function elEsc(){
+  if (EL.tool !== 'select'){ elTool('select', true); elLog('*Cancelado*'); }
+  else if (EL.sel){ EL.sel = null; elRender(); elPainel(); }
+  elPreview();
+}
+function elLog(msg){ EL.hist.push(msg); if (EL.hist.length > 3) EL.hist.shift(); elLogRender(); }
+function elLogRender(){ const h = $('#el-hist'); if (h) h.textContent = EL.hist.join('\n'); }
+function elAtualiza(){ elRender(); elPreview(); elPainel(); elLista(); elMateriais(); }
+
+/* ---------- Modelo: cortes e atributos ---------- */
+function elMaterializa(){
+  const w = EL.w; w.elev = w.elev || {};
+  if (!w.elev.cortes) w.elev.cortes = cortesAuto(EL.plan, w, elCfg());
+  if (!w.elev.attr) w.elev.attr = {};
+}
+function elLimites(x){
+  const bs = [0]; elMods().forEach(m => bs.push(m.x + m.w));
+  let a = 0, b = wallLen(EL.w);
+  bs.forEach(v => { if (v < x - 0.6 && v > a) a = v; if (v > x + 0.6 && v < b) b = v; });
+  return [a + MIN_MOD, b - MIN_MOD];
+}
+function elMoveCorte(x0, x1){
+  elMaterializa(); const e = EL.w.elev, i = e.cortes.findIndex(c => Math.abs(c - x0) < 0.6);
+  if (i < 0) return false;
+  e.cortes[i] = x1;
+  const k0 = String(Math.round(x0)), k1 = String(Math.round(x1));
+  if (k0 !== k1 && e.attr[k0]){ e.attr[k1] = e.attr[k0]; delete e.attr[k0]; }
+  return true;
+}
+function elValidaCorte(x){
+  const m = elMods().find(v => v.tipo !== 'porta' && x > v.x && x < v.x + v.w);
+  if (!m) return 'A posição precisa ficar dentro de um módulo (não sobre uma porta)';
+  if (x - m.x < MIN_MOD || m.x + m.w - x < MIN_MOD) return `Cada parte precisa ter pelo menos ${MIN_MOD} mm`;
+  return null;
+}
+function elAddCorte(x){
+  const m = elMods().find(v => v.tipo !== 'porta' && x > v.x && x < v.x + v.w); if (!m) return;
+  elMaterializa(); const e = EL.w.elev;
+  e.cortes.push(x); e.cortes.sort((a, b) => a - b);
+  const pai = e.attr[String(Math.round(m.x))]; if (pai) e.attr[String(Math.round(x))] = Object.assign({}, pai);
+}
+function elDelCorte(x){
+  elMaterializa(); const e = EL.w.elev, i = e.cortes.findIndex(c => Math.abs(c - x) < 0.6);
+  if (i < 0) return false;
+  e.cortes.splice(i, 1); delete e.attr[String(Math.round(x))]; return true;
+}
+function elSetAttr(xMod, obj){
+  elMaterializa(); const k = String(Math.round(xMod)), e = EL.w.elev;
+  e.attr[k] = Object.assign({}, e.attr[k], obj);
+}
+function elLimpaCortesNasPortas(){
+  const e = EL.w.elev; if (!e || !e.cortes) return;
+  const ps = portasDaParede(EL.plan, EL.w);
+  e.cortes = e.cortes.filter(c => !ps.some(p => c > p.a - 0.5 && c < p.b + 0.5));
+}
+const elSnap = () => JSON.stringify({ elev:EL.w.elev || null, doors:EL.plan.doors });
+function elCommit(fn){
+  EL.undo.push(elSnap()); if (EL.undo.length > 100) EL.undo.shift();
+  EL.redo = []; fn(); elSalvar();
+}
+function elSalvar(){
+  if (!EL.histOk){ registrar(EL.proj, `Elevação ${letras(EL.plan)[EL.w.id]} editada`); EL.histOk = true; }
+  EL.proj.atualizado = hoje(); saveDB(); elAtualiza();
+}
+function elRestaura(json){
+  const s = JSON.parse(json);
+  if (s.elev) EL.w.elev = s.elev; else delete EL.w.elev;
+  EL.plan.doors = s.doors; EL.sel = null; elSalvar();
+}
+function elUndo(){ if (!EL.undo.length){ elLog('Nada para desfazer'); return; } EL.redo.push(elSnap()); elRestaura(EL.undo.pop()); elLog('Desfeito'); }
+function elRedo(){ if (!EL.redo.length){ elLog('Nada para refazer'); return; } EL.undo.push(elSnap()); elRestaura(EL.redo.pop()); elLog('Refeito'); }
+function elRemodular(){
+  elCommit(() => { if (EL.w.elev){ delete EL.w.elev.cortes; delete EL.w.elev.attr; } EL.sel = null; });
+  elLog('Modulação automática refeita');
+}
+
+/* ---------- Seleção e arrasto ---------- */
+function elHit(p){
+  const cfg = elCfg(), H = cfg.altura, L = wallLen(EL.w), tol = 7 * elEscala(), mods = elMods();
+  if (p.x < -tol || p.x > L + tol || p.y < -tol || p.y > H + tol) return null;
+  for (const x of montantesMoveis(mods)) if (Math.abs(p.x - x) < tol) return { kind:'cut', x };
+  for (const m of mods) if (m.tipo === 'misto' && p.x > m.x && p.x < m.x + m.w && Math.abs(p.y - (H - m.trav)) < tol) return { kind:'trav', x:Math.round(m.x) };
+  const m = mods.find(v => p.x >= v.x && p.x <= v.x + v.w);
+  if (!m) return null;
+  return m.tipo === 'porta' ? { kind:'door', id:m.door } : { kind:'mod', x:Math.round(m.x) };
+}
+function elIniciaArrasto(hit, p){
+  const snap = elSnap(), Ls = letras(EL.plan)[EL.w.id];
+  if (hit.kind === 'cut'){
+    const lim = elLimites(hit.x), d = { kind:'cut', snap, cur:hit.x, lim };
+    d.msg = () => `Montante movido para ${cotaTxt(d.cur)} mm`;
+    EL.sel = { kind:'cut', x:hit.x }; return d;
+  }
+  if (hit.kind === 'trav'){
+    const d = { kind:'trav', snap, x:hit.x, z:0 };
+    d.msg = () => `Travessa a ${cotaTxt(d.z)} mm do piso`;
+    EL.sel = { kind:'mod', x:hit.x }; return d;
+  }
+  const door = EL.plan.doors.find(x => x.id === hit.id), L = wallLen(EL.w);
+  const d = { kind:'door', snap, door, c0:door.t * L, px0:p.x };
+  d.msg = () => `Porta a ${cotaTxt(door.t * L - (door.w || 800) / 2)} mm do início da parede ${Ls}`;
+  EL.sel = { kind:'door', id:hit.id }; return d;
+}
+function elArrasta(p){
+  const d = EL.drag, cfg = elCfg(), H = cfg.altura, L = wallLen(EL.w);
+  if (d.kind === 'cut'){
+    const x = Math.min(Math.max(elArred(p.x), d.lim[0]), d.lim[1]);
+    if (elMoveCorte(d.cur, x)){ d.cur = x; EL.sel = { kind:'cut', x }; }
+  } else if (d.kind === 'trav'){
+    d.z = Math.min(Math.max(elArred(H - p.y), cfg.rodape + 200), H - 200);
+    elSetAttr(d.x, { trav:d.z });
+  } else {
+    const dw = d.door.w || 800;
+    const c = Math.min(Math.max(elArred(d.c0 + p.x - d.px0 - dw / 2) + dw / 2, dw / 2), L - dw / 2);
+    d.door.t = c / L;
+  }
+  elRender(); elPainel();
+}
+function elClick(p){
+  if (EL.tool === 'split'){
+    const x = elArred(p.x), erro = elValidaCorte(x);
+    if (erro) elLog(erro); else { elCommit(() => elAddCorte(x)); elLog(`Montante criado a ${cotaTxt(x)} mm do início`); }
+    return;
+  }
+  if (EL.tool === 'erase'){
+    const h = elHit(p);
+    if (h && h.kind === 'cut'){ elCommit(() => elDelCorte(h.x)); elLog(`Montante a ${cotaTxt(h.x)} mm apagado`); }
+    else elLog('Clique sobre um montante entre dois módulos');
+    return;
+  }
+  const h = elHit(p);
+  EL.sel = !h ? null : h.kind === 'trav' ? { kind:'mod', x:h.x } : h;
+  elRender(); elPainel();
+}
+
+/* ---------- Linha de comando ---------- */
+function elComando(v){
+  const txt = String(v || '').trim();
+  if (!txt){ if (EL.tool !== 'select') elTool('select', true); elPreview(); return; }
+  EL.ultimaEntrada = txt;
+  const up = txt.toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, ''), c = EL_CMDS[up];
+  if (c){
+    if (c === 'undo') return elUndo();
+    if (c === 'redo') return elRedo();
+    if (c === 'fit'){ elFit(); elRender(); elLog('ZOOM ajustado'); return; }
+    if (c === 'auto') return elRemodular();
+    return elTool(c);
+  }
+  const n = numPlano(txt);
+  if (isNaN(n)){ elLog(`Comando desconhecido: ${txt}  (S selecionar · D dividir · E apagar · U desfazer · AUTO remodular)`); return; }
+  elLog(`> ${txt}`);
+  if (EL.tool === 'split'){
+    const x = r1(n), erro = elValidaCorte(x);
+    if (erro) elLog(erro); else { elCommit(() => elAddCorte(x)); elLog(`Montante criado a ${dec(x)} mm do início`); }
+    return;
+  }
+  if (EL.sel && EL.sel.kind === 'cut') return elPosicionaCorte(EL.sel.x, n);
+  if (EL.sel && EL.sel.kind === 'mod') return elLarguraModulo(EL.sel.x, n);
+  elLog('Selecione um módulo (o número vira a largura) ou um montante (o número vira a posição)');
+}
+function elPosicionaCorte(x0, x1){
+  const lim = elLimites(x0); x1 = r1(x1);
+  if (x1 < lim[0] || x1 > lim[1]){ elLog(`Posição entre ${cotaTxt(lim[0])} e ${cotaTxt(lim[1])} mm`); elPainel(); return; }
+  elCommit(() => { elMoveCorte(x0, x1); EL.sel = { kind:'cut', x:x1 }; });
+  elLog(`Montante a ${dec(x1)} mm do início`);
+}
+function elLarguraModulo(xMod, larg){
+  const mods = elMods(), m = mods.find(v => v.tipo !== 'porta' && Math.round(v.x) === xMod), mov = montantesMoveis(mods);
+  if (!m) return;
+  const dir = mov.find(x => Math.abs(x - (m.x + m.w)) < 0.6), esq = mov.find(x => Math.abs(x - m.x) < 0.6);
+  if (dir !== undefined) return elPosicionaCorte(dir, m.x + larg);
+  if (esq !== undefined){
+    const novo = m.x + m.w - larg, lim = elLimites(esq);
+    if (novo < lim[0] || novo > lim[1]){ elLog(`Largura fora do limite para este módulo`); elPainel(); return; }
+    elCommit(() => { elMoveCorte(esq, r1(novo)); EL.sel = { kind:'mod', x:Math.round(novo) }; });
+    elLog(`Módulo com ${dec(larg)} mm`); return;
+  }
+  elLog('Este módulo ocupa o vão inteiro. Divida-o (D) para poder mudar a largura.'); elPainel();
+}
+
+/* ---------- Desenho ---------- */
+function elRender(){
+  const g = $('#el-layer'); if (!g || !EL) return;
+  const cfg = elCfg(), n = elMods().length;
+  g.innerHTML = elevMarkup(EL.proj, EL.plan, EL.w, { fs:11 * elEscala(), sel:EL.sel, alcas:true });
+  $('#el-titulo').innerHTML = `Elevação ${letras(EL.plan)[EL.w.id]} · ${cotaTxt(wallLen(EL.w))} × ${cotaTxt(cfg.altura)} mm<small style="display:block;font-weight:400;font-size:12.5px">${TIPOS_PAREDE[EL.w.tipo].nome} · ${n} ${n === 1 ? 'módulo' : 'módulos'}${EL.w.elev && EL.w.elev.cortes ? ' · modulação manual' : ' · modulação automática'}</small>`;
+}
+function elPreview(){
+  const g = $('#el-preview'); if (!g || !EL) return;
+  const k = elEscala(), h = EL.hover, cfg = elCfg(), H = cfg.altura, L = wallLen(EL.w); let s = '';
+  $('#el-prompt').textContent = EL_PROMPTS[EL.tool];
+  const coord = $('#el-coord');
+  if (!h){ coord.textContent = 'X —   Z —'; g.innerHTML = ''; return; }
+  const x = Math.min(Math.max(elArred(h.x), 0), L), z = Math.min(Math.max(elArred(H - h.y), 0), H);
+  coord.textContent = `X ${dec(x).padStart(7)}   Z ${dec(z).padStart(7)}`;
+  s += `<line x1="${r1(EL.vb.x)}" y1="${r1(h.y)}" x2="${r1(EL.vb.x + EL.vb.w)}" y2="${r1(h.y)}" stroke="#14337a" stroke-opacity=".3" stroke-width="${r1(k)}"/>`
+    + `<line x1="${r1(h.x)}" y1="${r1(EL.vb.y)}" x2="${r1(h.x)}" y2="${r1(EL.vb.y + EL.vb.h)}" stroke="#14337a" stroke-opacity=".3" stroke-width="${r1(k)}"/>`
+    + `<rect x="${r1(h.x - 5 * k)}" y="${r1(h.y - 5 * k)}" width="${r1(10 * k)}" height="${r1(10 * k)}" fill="none" stroke="#14337a" stroke-width="${r1(1.2 * k)}"/>`;
+  if (EL.drag){
+    const d = EL.drag;
+    const txt = d.kind === 'cut' ? `X ${cotaTxt(d.cur)} mm` : d.kind === 'trav' ? `travessa a ${cotaTxt(d.z)} mm` : `porta a ${cotaTxt(d.door.t * L - (d.door.w || 800) / 2)} mm`;
+    s += edDica(h.x + 16 * k, h.y - 22 * k, txt, k);
+  } else if (EL.tool === 'split'){
+    const m = elMods().find(v => v.tipo !== 'porta' && x > v.x && x < v.x + v.w);
+    if (m && h.y > -8 * k && h.y < H + 8 * k){
+      const ok = x - m.x >= MIN_MOD && m.x + m.w - x >= MIN_MOD;
+      s += `<line x1="${x}" y1="0" x2="${x}" y2="${H}" stroke="${ok ? '#0b8fb3' : '#e0533f'}" stroke-width="${PERFIL}" stroke-opacity=".6"/>`
+        + edDica(h.x + 16 * k, h.y - 22 * k, `${cotaTxt(x - m.x)} | ${cotaTxt(m.x + m.w - x)} mm`, k);
+    }
+  } else {
+    const hit = elHit(h);
+    if (hit && hit.kind === 'cut') s += `<line x1="${hit.x}" y1="0" x2="${hit.x}" y2="${H}" stroke="${EL.tool === 'erase' ? '#e0533f' : '#53d4f0'}" stroke-width="${r1(PERFIL + 8 * k)}" stroke-opacity=".5"/>`;
+    else if (hit && hit.kind === 'trav' && EL.tool === 'select'){
+      const m = elMods().find(v => Math.round(v.x) === hit.x);
+      if (m) s += `<line x1="${r1(m.x)}" y1="${H - m.trav}" x2="${r1(m.x + m.w)}" y2="${H - m.trav}" stroke="#53d4f0" stroke-width="${r1(PERFIL + 8 * k)}" stroke-opacity=".5"/>`;
+    }
+  }
+  g.innerHTML = s;
+}
+
+/* ---------- Painéis laterais ---------- */
+function elLista(){
+  const el = $('#el-lista'); if (!el || !EL) return;
+  const proj = EL.proj, plan = EL.plan, Ls = letras(plan);
+  el.innerHTML = divisoriasDoProjeto(proj).map(d => { const n = modulosParede(plan, d, elevCfg(proj, d)).length; return `
+    <button class="wall-item ${d.id === EL.w.id ? 'active' : ''}" data-w="${d.id}">
+      <span class="wall-tag">${Ls[d.id]}</span>
+      <span><b>${cotaTxt(wallLen(d))} mm</b><small>${TIPOS_PAREDE[d.tipo].nome} · ${n} ${n === 1 ? 'módulo' : 'módulos'}</small></span>
+    </button>`; }).join('');
+  $$('[data-w]', el).forEach(b => b.addEventListener('click', () => { elevSel[proj.id] = b.dataset.w; abaElevacoes(proj); }));
+}
+function elMateriais(){
+  const el = $('#el-mat'); if (!el || !EL) return;
+  const Ls = letras(EL.plan)[EL.w.id];
+  const pecas = agrupa(pecasParede(EL.proj, EL.plan, EL.w), p => `${p.peca}|${p.l}|${p.a}`, p => ({ peca:p.peca, l:p.l, a:p.a, q:0, paredes:new Set() }));
+  const perfis = agrupa(perfisParede(EL.proj, EL.plan, EL.w), p => `${p.nome}|${p.c}`, p => ({ nome:p.nome, c:p.c, q:0, paredes:new Set() }));
+  el.innerHTML = `
+    <div class="card-head"><h3>Materiais da parede ${Ls}</h3><a href="#/projetos/${esc(EL.proj.id)}/materiais">Ver tudo</a></div>
+    <div class="prop-sec" style="margin-top:0">Vidros, painéis e portas</div>
+    <div class="table-wrap"><table class="pecas"><thead><tr><th>Peça</th><th class="r">L</th><th class="r">A</th><th class="r">Qtd.</th></tr></thead>
+      <tbody>${pecas.map(p => `<tr><td>${p.peca}</td><td class="r num">${p.l}</td><td class="r num">${p.a}</td><td class="r num">${p.q}</td></tr>`).join('')}</tbody></table></div>
+    <div class="prop-sec">Perfis de alumínio</div>
+    <div class="table-wrap"><table class="pecas"><thead><tr><th>Perfil</th><th class="r">Comprimento</th><th class="r">Qtd.</th></tr></thead>
+      <tbody>${perfis.map(p => `<tr><td>${p.nome}</td><td class="r num">${p.c}</td><td class="r num">${p.q}</td></tr>`).join('')}</tbody></table></div>`;
+}
+function elPainel(){
+  const P = $('#el-props'); if (!P || !EL) return;
+  const cfg = elCfg(), H = cfg.altura, L = wallLen(EL.w), mods = elMods(), mov = montantesMoveis(mods), sel = EL.sel, Lt = letras(EL.plan)[EL.w.id];
+  const inp = (id, rot, val, dis) => `<div><label for="${id}">${rot}</label><div class="input-suffix"><input id="${id}" value="${val}" inputmode="decimal"${dis ? ' disabled' : ''}><em>mm</em></div></div>`;
+  const ligar = (id, fn) => { const el = $('#' + id); if (!el) return; el.addEventListener('change', () => { const v = numPlano(el.value); if (isNaN(v)) return elPainel(); fn(v); }); el.addEventListener('keydown', e => { if (e.key === 'Enter') el.blur(); }); };
+
+  if (sel && sel.kind === 'mod'){
+    const m = mods.find(v => v.tipo !== 'porta' && Math.round(v.x) === sel.x);
+    if (!m){ EL.sel = null; return elPainel(); }
+    const dir = mov.some(x => Math.abs(x - (m.x + m.w)) < 0.6), esq = mov.some(x => Math.abs(x - m.x) < 0.6);
+    P.innerHTML = `<h3>Módulo ${m.idx + 1} da parede ${Lt}</h3>
+      <p class="prop-empty" style="margin-top:4px">Começa a ${cotaTxt(m.x)} mm do início</p>
+      <div class="prop-grid">${inp('em-w', 'Largura', dec(m.w), !dir && !esq)}
+        <div><label for="em-tipo">Tipo</label><select id="em-tipo">${Object.keys(TIPOS_MODULO).map(k => `<option value="${k}" ${k === m.tipo ? 'selected' : ''}>${TIPOS_MODULO[k]}</option>`).join('')}</select></div>
+        ${m.tipo === 'misto' ? inp('em-trav', 'Travessa (do piso)', dec(m.trav)) : ''}</div>
+      <div class="btn-row">
+        <button class="btn btn-outline btn-sm" data-div="2">Dividir em 2</button>
+        <button class="btn btn-outline btn-sm" data-div="3">Dividir em 3</button>
+        ${dir ? `<button class="btn btn-outline btn-sm" id="em-junta">Juntar com o da direita</button>` : ''}
+      </div>
+      <div class="btn-row"><button class="btn btn-outline btn-sm" id="em-todos">Aplicar tipo${m.tipo === 'misto' ? ' e travessa' : ''} à parede inteira</button></div>
+      <p class="form-note">${ico('info')}${dir || esq ? 'Arraste os quadradinhos azuis ou digite a largura na linha de comando.' : 'Módulo único no vão: divida para criar montantes móveis.'}</p>`;
+    ligar('em-w', v => elLarguraModulo(sel.x, v));
+    ligar('em-trav', v => {
+      if (v < cfg.rodape + 200 || v > H - 200){ toast(`Travessa entre ${cotaTxt(cfg.rodape + 200)} e ${cotaTxt(H - 200)} mm.`, 'alert'); return elPainel(); }
+      elCommit(() => elSetAttr(sel.x, { trav:r1(v) })); elLog(`Travessa a ${dec(v)} mm do piso`);
+    });
+    $('#em-tipo').addEventListener('change', e => { elCommit(() => elSetAttr(sel.x, { tipo:e.target.value })); elLog(`Módulo: ${TIPOS_MODULO[e.target.value]}`); });
+    $$('[data-div]', P).forEach(b => b.addEventListener('click', () => {
+      const n = +b.dataset.div, parte = m.w / n;
+      if (parte < MIN_MOD){ toast('Módulo estreito demais para dividir.', 'alert'); return; }
+      elCommit(() => { for (let i = 1; i < n; i++) elAddCorte(Math.round(m.x + parte * i)); });
+      elLog(`Módulo dividido em ${n} partes de ${cotaTxt(parte)} mm`);
+    }));
+    const j = $('#em-junta'); if (j) j.addEventListener('click', () => { elCommit(() => elDelCorte(m.x + m.w)); elLog('Módulos unidos'); });
+    $('#em-todos').addEventListener('click', () => {
+      elCommit(() => mods.forEach(v => { if (v.tipo !== 'porta') elSetAttr(v.x, m.tipo === 'misto' ? { tipo:m.tipo, trav:m.trav } : { tipo:m.tipo }); }));
+      elLog(`Parede ${Lt}: todos os módulos como ${TIPOS_MODULO[m.tipo]}`);
+    });
+  } else if (sel && sel.kind === 'cut'){
+    const i = mods.findIndex(v => Math.abs(v.x - sel.x) < 0.6), a = mods[i - 1], b = mods[i];
+    if (i < 1){ EL.sel = null; return elPainel(); }
+    P.innerHTML = `<h3>Montante</h3><p class="prop-empty" style="margin-top:4px">Entre os módulos ${a.idx + 1} e ${b.idx + 1} da parede ${Lt}</p>
+      <div class="prop-grid">${inp('ec-x', 'Posição (do início)', dec(sel.x))}<div></div>
+        ${inp('ec-a', 'Módulo à esquerda', dec(a.w))}${inp('ec-b', 'Módulo à direita', dec(b.w))}</div>
+      <div class="btn-row"><button class="btn btn-danger btn-sm" id="ec-del">${ico('trash')}Apagar montante</button></div>
+      <p class="form-note">${ico('info')}Arraste o montante na elevação ou digite a posição exata.</p>`;
+    ligar('ec-x', v => elPosicionaCorte(sel.x, v));
+    ligar('ec-a', v => elPosicionaCorte(sel.x, a.x + v));
+    ligar('ec-b', v => elPosicionaCorte(sel.x, b.x + b.w - v));
+    $('#ec-del').addEventListener('click', () => { const x = sel.x; elCommit(() => { elDelCorte(x); EL.sel = null; }); elLog('Montante apagado'); });
+  } else if (sel && sel.kind === 'door'){
+    const d = EL.plan.doors.find(x => x.id === sel.id);
+    if (!d){ EL.sel = null; return elPainel(); }
+    const dw = d.w || 800, dist = d.t * L - dw / 2;
+    P.innerHTML = `<h3>Porta</h3><p class="prop-empty" style="margin-top:4px">Na parede ${Lt} · a mesma porta da planta</p>
+      <div class="prop-grid">${inp('ed-w', 'Largura da folha', dec(dw))}${inp('ed-d', 'Distância do início', dec(dist))}${inp('ed-h', 'Altura da porta', dec(cfg.portaAlt))}</div>
+      <p class="form-note">${ico('info')}Arraste a porta para os lados. A mudança vale também na planta.</p>`;
+    ligar('ed-w', v => {
+      if (!(v >= 400 && v <= L - 20)){ toast(`Largura entre 400 e ${cotaTxt(L - 20)} mm.`, 'alert'); return elPainel(); }
+      elCommit(() => { d.w = r1(v); d.t = Math.min(Math.max((dist + v / 2) / L, v / 2 / L), 1 - v / 2 / L); elLimpaCortesNasPortas(); });
+      elLog(`Porta com ${dec(v)} mm`);
+    });
+    ligar('ed-d', v => {
+      if (!(v >= 0 && v <= L - dw)){ toast(`Distância entre 0 e ${cotaTxt(L - dw)} mm.`, 'alert'); return elPainel(); }
+      elCommit(() => { d.t = (v + dw / 2) / L; elLimpaCortesNasPortas(); }); elLog(`Porta a ${dec(v)} mm do início`);
+    });
+    ligar('ed-h', v => elCfgSalva('portaAlt', v, 1800, 3000));
+  } else {
+    P.innerHTML = `<h3>Parede ${Lt}</h3>
+      <div class="prop-grid">
+        ${inp('ep-alt', 'Altura total', cfg.altura)}${inp('ep-rod', 'Rodapé', cfg.rodape)}
+        ${inp('ep-tra', 'Travessa padrão', cfg.travessa)}${inp('ep-por', 'Altura da porta', cfg.portaAlt)}
+        ${inp('ep-mod', 'Módulo máximo (auto)', cfg.modMax)}
+      </div>
+      <div class="prop-empty" style="margin-top:14px;line-height:1.6">
+        <b>Clique</b> num módulo, montante ou porta para editar.<br>
+        <b>Arraste</b> um montante para mudar as larguras, a travessa para mudar a altura, a porta para reposicionar.<br>
+        <b>D</b> + Enter divide um módulo · <b>E</b> + Enter apaga um montante · <b>Ctrl+Z</b> desfaz.</div>`;
+    ligar('ep-alt', v => elCfgSalva('altura', v, 1000, 6000));
+    ligar('ep-rod', v => elCfgSalva('rodape', v, 0, 400));
+    ligar('ep-tra', v => elCfgSalva('travessa', v, 300, 2500));
+    ligar('ep-por', v => elCfgSalva('portaAlt', v, 1800, 3000));
+    ligar('ep-mod', v => elCfgSalva('modMax', v, 300, 3000));
+  }
+}
+function elCfgSalva(chave, v, min, max){
+  v = Math.round(v);
+  if (!(v >= min && v <= max)){ toast(`Use um valor entre ${min} e ${max} mm.`, 'alert'); return elPainel(); }
+  elCommit(() => {
+    EL.w.elev = EL.w.elev || {}; EL.w.elev[chave] = v;
+    if (chave === 'modMax'){ delete EL.w.elev.cortes; delete EL.w.elev.attr; }
+  });
+  const nomes = { altura:'Altura total', rodape:'Rodapé', travessa:'Travessa padrão', portaAlt:'Altura da porta', modMax:'Módulo máximo' };
+  elLog(`${nomes[chave]}: ${v} mm`);
+  if (chave === 'altura'){ elFit(); elRender(); }
+}
+
+document.addEventListener('keydown', e => {
+  if (!EL || !$('#el-svg')) return;
+  const tag = (e.target.tagName || '').toLowerCase();
+  if (['input', 'textarea', 'select'].includes(tag) || !$('#modal-back').hidden || $('#viewer-root').innerHTML) return;
+  const k = e.key;
+  if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'z'){ e.preventDefault(); e.shiftKey ? elRedo() : elUndo(); return; }
+  if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'y'){ e.preventDefault(); elRedo(); return; }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (k === 'F9'){ e.preventDefault(); elGrade(); return; }
+  if (k === 'Escape'){ elEsc(); return; }
+  if ((k === 'Delete' || k === 'Backspace') && EL.sel && EL.sel.kind === 'cut'){ e.preventDefault(); const x = EL.sel.x; elCommit(() => { elDelCorte(x); EL.sel = null; }); elLog('Montante apagado'); return; }
+  if (k === 'Enter' || k === ' '){ e.preventDefault(); elComando(''); return; }
+  if (k.length === 1){ e.preventDefault(); const c = $('#el-cmd'); c.focus(); c.value += k; }
+});
+
+/* ============================================================
+   MATERIAIS DO PROJETO
+============================================================ */
+function abaMateriais(proj){
+  const pecas = pecasProjeto(proj), pf = perfisProjeto(proj), ac = acessoriosProjeto(proj);
+  if (!divisoriasDoProjeto(proj).length){
+    $('#pj-aba').innerHTML = `<div class="card empty">${ico('pedidos')}<div>Nenhuma divisória na planta ainda.<br><a href="#/projetos/${esc(proj.id)}/planta">Desenhe as divisórias</a> para gerar a lista de materiais.</div></div>`;
+    return;
+  }
+  const totBarras = pf.resumo.reduce((s, r) => s + r.barras, 0), totPerfil = pf.resumo.reduce((s, r) => s + r.total, 0);
+  const nVid = pecas.filter(p => p.peca === 'Vidro temperado').reduce((s, p) => s + p.q, 0);
+  const nCeg = pecas.filter(p => p.peca === 'Painel cego').reduce((s, p) => s + p.q, 0);
+  const nPor = pecas.filter(p => p.peca.startsWith('Porta')).reduce((s, p) => s + p.q, 0);
+  $('#pj-aba').innerHTML = `
+    <div class="kpis">
+      <div class="card kpi"><div class="kpi-label">Vidros</div><div class="kpi-value num">${nVid}</div><div class="kpi-delta">peças de vidro temperado</div></div>
+      <div class="card kpi"><div class="kpi-label">Painéis cegos</div><div class="kpi-value num">${nCeg}</div><div class="kpi-delta">peças</div></div>
+      <div class="card kpi"><div class="kpi-label">Portas</div><div class="kpi-value num">${nPor}</div><div class="kpi-delta">com ferragens</div></div>
+      <div class="card kpi kpi-dark"><div class="kpi-label">Perfis de alumínio</div><div class="kpi-value num">${totBarras} barras</div><div class="kpi-delta">de 6 m · ${fmm(totPerfil)} mm cortados</div></div>
+    </div>
+    <div class="toolbar">
+      <p class="form-note" style="margin:0">${ico('info')}Lista calculada a partir da planta e das elevações. Medidas em mm, com ${PERFIL} mm de perfil descontados. Conferir antes do corte.</p>
+      <button class="btn btn-primary btn-sm" id="mt-csv">${ico('download')}Exportar tudo para Excel (CSV)</button>
+    </div>
+    <div class="grid-half">
+      <div class="card card-pad">
+        <div class="card-head"><h3>Vidros, painéis e portas</h3><small>${pecas.length} medidas diferentes</small></div>
+        <div class="table-wrap"><table class="pecas">
+          <thead><tr><th>Peça</th><th class="r">Largura</th><th class="r">Altura</th><th class="r">Qtd.</th><th>Paredes</th></tr></thead>
+          <tbody>${pecas.map(p => `<tr><td>${p.peca}</td><td class="r num">${p.l}</td><td class="r num">${p.a}</td><td class="r num">${p.q}</td><td class="td-muted">${p.paredes}</td></tr>`).join('')}</tbody>
+        </table></div>
+      </div>
+      <div>
         <div class="card card-pad">
-          <h3>Configuração da parede ${Ls[w.id]}</h3>
-          <div class="prop-grid">
-            ${campo('el-alt', 'Altura total', cfg.altura, 'Padrão: pé-direito do projeto')}
-            ${campo('el-mod', 'Módulo máximo', cfg.modMax)}
-            ${campo('el-rod', 'Rodapé', cfg.rodape)}
-            ${campo('el-por', 'Altura da porta', cfg.portaAlt)}
-            ${temMisto || w.tipo === 'misto' ? campo('el-tra', 'Travessa (painel cego até)', cfg.travessa) : ''}
-          </div>
-          <div class="btn-row"><button class="btn btn-outline btn-sm" id="el-reset">${ico('refresh')}Restaurar padrão</button></div>
-          <p class="form-note">${ico('info')}A modulação divide o comprimento livre em partes iguais, sem passar do módulo máximo.</p>
+          <div class="card-head"><h3>Perfis de alumínio · barras de 6 m</h3><small>${totBarras} barras</small></div>
+          <div class="table-wrap"><table class="pecas">
+            <thead><tr><th>Perfil</th><th class="r">Peças</th><th class="r">Total (mm)</th><th class="r">Barras</th><th class="r">Sobra (mm)</th></tr></thead>
+            <tbody>${pf.resumo.map(r => `<tr><td>${r.nome}</td><td class="r num">${r.pecas}</td><td class="r num">${fmm(r.total)}</td><td class="r num"><b>${r.barras}</b></td><td class="r num td-muted">${fmm(r.sobra)}</td></tr>`).join('')}</tbody>
+          </table></div>
         </div>
         <div class="card card-pad section-gap">
-          <div class="card-head"><h3>Peças desta parede</h3><small>${pecas.length}</small></div>
+          <div class="card-head"><h3>Ferragens e acessórios</h3></div>
           <div class="table-wrap"><table class="pecas">
-            <thead><tr><th>Peça</th><th class="r">L</th><th class="r">A</th></tr></thead>
-            <tbody>${pecas.map(p => `<tr><td>${p.peca}</td><td class="r num">${p.l}</td><td class="r num">${p.a}</td></tr>`).join('')}</tbody>
+            <thead><tr><th>Item</th><th class="r">Quantidade</th><th></th></tr></thead>
+            <tbody>${ac.map(a => `<tr><td>${a.item}</td><td class="r num">${a.un === 'mm' ? fmm(a.q) : a.q} ${a.un}</td><td class="td-muted">${a.obs || ''}</td></tr>`).join('')}</tbody>
           </table></div>
         </div>
       </div>
     </div>
     <div class="card card-pad section-gap">
-      <div class="card-head"><h3>Lista de peças do projeto</h3>
-        <button class="btn btn-outline btn-sm" id="el-csv">${ico('download')}Exportar para Excel (CSV)</button></div>
+      <div class="card-head"><h3>Lista de corte dos perfis</h3><small>${pf.corte.reduce((s, c) => s + c.q, 0)} cortes</small></div>
       <div class="table-wrap"><table class="pecas">
-        <thead><tr><th>Peça</th><th class="r">Largura (mm)</th><th class="r">Altura (mm)</th><th class="r">Quantidade</th><th>Paredes</th></tr></thead>
-        <tbody>${todas.map(p => `<tr><td>${p.peca}</td><td class="r num">${p.l}</td><td class="r num">${p.a}</td><td class="r num">${p.q}</td><td class="td-muted">${p.paredes}</td></tr>`).join('')}</tbody>
+        <thead><tr><th>Perfil</th><th class="r">Comprimento (mm)</th><th class="r">Quantidade</th><th>Paredes</th></tr></thead>
+        <tbody>${pf.corte.map(c => `<tr><td>${c.nome}</td><td class="r num">${c.c}</td><td class="r num">${c.q}</td><td class="td-muted">${c.paredes}</td></tr>`).join('')}</tbody>
       </table></div>
-      <p class="form-note">${ico('info')}Medidas aproximadas: descontados ${DESC_PERFIL} mm de perfis. Conferir antes do corte.</p>
     </div>`;
-
-  const sel = id => { elevSel[proj.id] = id; abaElevacoes(proj); };
-  $$('[data-w]').forEach(b => b.addEventListener('click', () => sel(b.dataset.w)));
-  $('#el-prev').addEventListener('click', () => sel(divs[i - 1].id));
-  $('#el-next').addEventListener('click', () => sel(divs[i + 1].id));
-  $('#el-planta').addEventListener('click', () => { edFoco[proj.id] = w.id; });
-  const salvarCfg = (chave, el, min, max) => {
-    const v = Math.round(mmVal(el.value));
-    if (!(v >= min && v <= max)){ el.classList.add('invalid'); toast(`Use um valor entre ${min} e ${max} mm.`, 'alert'); return; }
-    w.elev = w.elev || {}; w.elev[chave] = v;
-    if (chave === 'modMax') delete w.elev.tipos;
-    proj.atualizado = hoje(); saveDB(); abaElevacoes(proj);
-  };
-  [['el-alt', 'altura', 1000, 6000], ['el-mod', 'modMax', 300, 3000], ['el-rod', 'rodape', 0, 400], ['el-por', 'portaAlt', 1800, 3000], ['el-tra', 'travessa', 300, 2500]]
-    .forEach(([id, k, a, b]) => { const el = $('#' + id); if (el){ el.addEventListener('change', () => salvarCfg(k, el, a, b)); el.addEventListener('keydown', e => { if (e.key === 'Enter') el.blur(); }); } });
-  $('#el-reset').addEventListener('click', () => { delete w.elev; saveDB(); abaElevacoes(proj); toast('Elevação voltou ao padrão.', 'refresh'); });
-  $$('#el-stage [data-mod]').forEach(g => g.addEventListener('click', () => {
-    const k = +g.dataset.mod, atual = (mods.find(m => m.idx === k) || {}).tipo || w.tipo;
-    const ordem = ['vidro', 'cego', 'misto'], prox = ordem[(ordem.indexOf(atual) + 1) % 3];
-    w.elev = w.elev || {}; w.elev.tipos = w.elev.tipos || {};
-    if (prox === w.tipo) delete w.elev.tipos[k]; else w.elev.tipos[k] = prox;
-    proj.atualizado = hoje(); saveDB(); abaElevacoes(proj);
-  }));
-  $('#el-csv').addEventListener('click', () => {
-    const linhas = [['Peça', 'Largura (mm)', 'Altura (mm)', 'Quantidade', 'Paredes']].concat(todas.map(p => [p.peca, p.l, p.a, p.q, p.paredes]));
-    const csv = '﻿' + linhas.map(l => l.map(c => `"${String(c).replace(/"/g, '""')}"`).join(';')).join('\r\n');
-    baixarBlob(new Blob([csv], { type:'text/csv;charset=utf-8' }), `${proj.id} - lista de peças.csv`);
-    toast('Lista de peças exportada.', 'download');
+  $('#mt-csv').addEventListener('click', () => {
+    const L = [['VIDROS, PAINÉIS E PORTAS'], ['Peça', 'Largura (mm)', 'Altura (mm)', 'Quantidade', 'Paredes']]
+      .concat(pecas.map(p => [p.peca, p.l, p.a, p.q, p.paredes]))
+      .concat([[], ['PERFIS DE ALUMÍNIO — BARRAS DE 6 M'], ['Perfil', 'Peças', 'Total (mm)', 'Barras', 'Sobra (mm)']])
+      .concat(pf.resumo.map(r => [r.nome, r.pecas, r.total, r.barras, r.sobra]))
+      .concat([[], ['LISTA DE CORTE DOS PERFIS'], ['Perfil', 'Comprimento (mm)', 'Quantidade', 'Paredes']])
+      .concat(pf.corte.map(c => [c.nome, c.c, c.q, c.paredes]))
+      .concat([[], ['FERRAGENS E ACESSÓRIOS'], ['Item', 'Quantidade', 'Unidade', 'Observação']])
+      .concat(ac.map(a => [a.item, a.q, a.un, a.obs || '']));
+    const csv = '﻿' + L.map(l => l.map(c => `"${String(c).replace(/"/g, '""')}"`).join(';')).join('\r\n');
+    baixarBlob(new Blob([csv], { type:'text/csv;charset=utf-8' }), `${proj.id} - materiais.csv`);
+    toast('Lista de materiais exportada.', 'download');
   });
 }
 
@@ -1074,7 +1732,7 @@ function abaArquivos(proj){
             <td>${esc(v.rev)}</td>
             <td><span class="badge ${SIT_ARQ[a.sit].cor}">${SIT_ARQ[a.sit].nome}</span></td>
             <td class="td-muted">${esc(v.data)} · ${esc(v.autor)}</td>
-            <td class="r td-muted">${v.tamanho ? fmtBytes(v.tamanho) : v.gen === 'medicao' ? '6 fotos' : v.gen === 'executivo' ? 'planta + elevações' : '—'}</td>
+            <td class="r td-muted">${v.tamanho ? fmtBytes(v.tamanho) : v.gen === 'medicao' ? '6 fotos' : v.gen === 'executivo' ? 'planta, elevações e materiais' : '—'}</td>
             <td class="r"><button class="btn btn-outline btn-sm" data-abrir="${esc(a.id)}">${ico('eye')}Abrir</button></td>
           </tr>`; }).join('')}</tbody></table></div>`
       : `<div class="empty">${ico('inbox')}<div>Nenhum arquivo ainda. Envie plantas, fotos da obra ou documentos.</div></div>`}
